@@ -30,6 +30,19 @@ enum VerifierKind: Sendable, Equatable {
     case tenG
     case elevenG
     case twelveC
+
+    init(verifierFlag: UInt32?) throws {
+        switch verifierFlag {
+        case Constants.TNS_VERIFIER_TYPE_10G:
+            self = .tenG
+        case Constants.TNS_VERIFIER_TYPE_11G_1, Constants.TNS_VERIFIER_TYPE_11G_2:
+            self = .elevenG
+        case Constants.TNS_VERIFIER_TYPE_12C:
+            self = .twelveC
+        default:
+            throw OracleSQLError.unsupportedVerifierType(verifierFlag ?? 0)
+        }
+    }
 }
 
 struct OracleFrontendMessageEncoder {
@@ -317,20 +330,10 @@ struct OracleFrontendMessageEncoder {
         case .usernamePassword(_, _, let newPassword):
             numberOfPairs += 2
             authMode |= Constants.TNS_AUTH_MODE_WITH_PASSWORD
-
-            switch verifierType {
-            case Constants.TNS_VERIFIER_TYPE_10G:
-                verifierKind = .tenG
-            case Constants.TNS_VERIFIER_TYPE_11G_1, Constants.TNS_VERIFIER_TYPE_11G_2:
-                verifierKind = .elevenG
-            case Constants.TNS_VERIFIER_TYPE_12C:
-                verifierKind = .twelveC
+            verifierKind = try VerifierKind(verifierFlag: verifierType)
+            if verifierKind == .twelveC {
                 numberOfPairs += 1
-            default:
-                throw OracleSQLError.unsupportedVerifierType(verifierType ?? 0)
             }
-
-            // determine which other key/value pairs to write
             if newPassword != nil {
                 numberOfPairs += 1
                 authMode |= Constants.TNS_AUTH_MODE_CHANGE_PASSWORD
@@ -910,6 +913,7 @@ extension OracleFrontendMessageEncoder {
         let encodedPassword: String
         let encodedNewPassword: String?
 
+        let originalPassword = password
         let password = password.data(using: .utf8) ?? .init()
 
         guard let authVFRData = parameters["AUTH_VFR_DATA"] else {
@@ -926,10 +930,7 @@ extension OracleFrontendMessageEncoder {
         switch kind {
         case .tenG:
             keyLength = 24
-            let tenGHash = Oracle10GHash.compute(
-                username: username,
-                password: String(decoding: password, as: UTF8.self)
-            )
+            let tenGHash = oracle10GHash(username: username, password: originalPassword)
             passwordHash = tenGHash + [UInt8](repeating: 0, count: 16)
             passwordKey = nil
         case .elevenG:

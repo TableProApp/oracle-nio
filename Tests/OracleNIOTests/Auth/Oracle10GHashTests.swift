@@ -19,28 +19,28 @@ import Testing
 @Suite("Oracle 10G password hash") struct Oracle10GHashTests {
     @Test("Canonical passlib test vector: username/password -> 872805F3F4C83365")
     func canonicalVector() {
-        let hash = Oracle10GHash.compute(username: "username", password: "password")
+        let hash = oracle10GHash(username: "username", password: "password")
         #expect(hash.hexString.uppercased() == "872805F3F4C83365")
     }
 
     @Test("Demo SCOTT/TIGER vector matches public reference")
     func scottTiger() {
-        let hash = Oracle10GHash.compute(username: "SCOTT", password: "TIGER")
+        let hash = oracle10GHash(username: "SCOTT", password: "TIGER")
         #expect(hash.hexString.uppercased() == "F894844C34402B67")
     }
 
     @Test("Lowercase input produces same hash as uppercase (case-insensitive 10G)")
     func caseInsensitive() {
-        let upper = Oracle10GHash.compute(username: "SCOTT", password: "TIGER")
-        let lower = Oracle10GHash.compute(username: "scott", password: "tiger")
-        let mixed = Oracle10GHash.compute(username: "Scott", password: "TiGeR")
+        let upper = oracle10GHash(username: "SCOTT", password: "TIGER")
+        let lower = oracle10GHash(username: "scott", password: "tiger")
+        let mixed = oracle10GHash(username: "Scott", password: "TiGeR")
         #expect(upper == lower)
         #expect(upper == mixed)
     }
 
     @Test("Empty password produces a deterministic hash, no crash")
     func emptyPassword() {
-        let hash = Oracle10GHash.compute(username: "USER", password: "")
+        let hash = oracle10GHash(username: "USER", password: "")
         #expect(hash.count == 8)
     }
 
@@ -53,7 +53,39 @@ import Testing
             ("SYSTEM", "MANAGER"),
         ]
         for (user, pass) in inputs {
-            #expect(Oracle10GHash.compute(username: user, password: pass).count == 8)
+            #expect(oracle10GHash(username: user, password: pass).count == 8)
+        }
+    }
+}
+
+@Suite("VerifierKind dispatch") struct VerifierKindTests {
+    @Test("Recognizes 10G verifier flag 0x939")
+    func tenG() throws {
+        #expect(try VerifierKind(verifierFlag: 0x939) == .tenG)
+    }
+
+    @Test("Recognizes both 11G variants")
+    func elevenG() throws {
+        #expect(try VerifierKind(verifierFlag: 0xb152) == .elevenG)
+        #expect(try VerifierKind(verifierFlag: 0x1b25) == .elevenG)
+    }
+
+    @Test("Recognizes 12C verifier")
+    func twelveC() throws {
+        #expect(try VerifierKind(verifierFlag: 0x4815) == .twelveC)
+    }
+
+    @Test("Throws unsupportedVerifierType for unknown flag preserving the value")
+    func unsupported() {
+        #expect(throws: OracleSQLError.self) {
+            try VerifierKind(verifierFlag: 0xdead)
+        }
+    }
+
+    @Test("Throws unsupportedVerifierType for nil flag")
+    func nilFlag() {
+        #expect(throws: OracleSQLError.self) {
+            try VerifierKind(verifierFlag: nil)
         }
     }
 }

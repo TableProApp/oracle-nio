@@ -31,23 +31,23 @@ import Foundation
 /// the last 8 bytes of the second-pass ciphertext.
 ///
 /// Reference test vector: `username` / `password` -> `872805F3F4C83365`.
-public enum Oracle10GHash {
-    static let initialKey: [UInt8] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]
+@usableFromInline
+let oracle10GInitialKey: [UInt8] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]
 
-    public static func compute(username: String, password: String) -> [UInt8] {
-        let posix = Locale(identifier: "en_US_POSIX")
-        let combined = (username + password).uppercased(with: posix)
-        let utf16 = combined.data(using: .utf16BigEndian) ?? Data()
-        var padded = [UInt8](utf16)
-        let remainder = padded.count % 8
-        if remainder != 0 {
-            padded.append(contentsOf: [UInt8](repeating: 0, count: 8 - remainder))
-        }
-        let pass1 = desCBCEncrypt(key: initialKey, plaintext: padded)
-        let key2 = Array(pass1.suffix(8))
-        let pass2 = desCBCEncrypt(key: key2, plaintext: padded)
-        return Array(pass2.suffix(8))
+@usableFromInline
+func oracle10GHash(username: String, password: String) -> [UInt8] {
+    let posix = Locale(identifier: "en_US_POSIX")
+    let combined = (username + password).uppercased(with: posix)
+    let utf16 = combined.data(using: .utf16BigEndian) ?? Data()
+    var padded = [UInt8](utf16)
+    let remainder = padded.count % 8
+    if remainder != 0 {
+        padded.append(contentsOf: [UInt8](repeating: 0, count: 8 - remainder))
     }
+    let pass1 = desCBCEncrypt(key: oracle10GInitialKey, plaintext: padded)
+    let key2 = Array(pass1.suffix(8))
+    let pass2 = desCBCEncrypt(key: key2, plaintext: padded)
+    return Array(pass2.suffix(8))
 }
 
 #if canImport(CommonCrypto)
@@ -69,6 +69,7 @@ func desCBCEncrypt(key: [UInt8], plaintext: [UInt8]) -> [UInt8] {
         &produced
     )
     precondition(status == kCCSuccess, "CCCrypt(DES-CBC) failed with status \(status)")
+    precondition(produced == plaintext.count, "DES-CBC produced \(produced) bytes, expected \(plaintext.count)")
     return Array(output.prefix(produced))
 }
 #else
