@@ -574,14 +574,16 @@ struct OracleFrontendMessageEncoder {
         self.buffer.writeInteger(UInt8(0))  // pointer (al8dnam)
         self.buffer.writeUB4(0)  // al8dnaml
         self.buffer.writeUB4(0)  // al8regid_msb
-        if statementOptions.arrayDMLRowCounts {
-            self.buffer.writeInteger(UInt8(1))  // pointer (al8pidmlrc)
-            self.buffer.writeUB4(statementContext.executionCount)  // al8pidmlrcbl / numberOfExecutions
-            self.buffer.writeInteger(UInt8(1))  // pointer (al8pidmlrcl)
-        } else {
-            self.buffer.writeInteger(UInt8(0))  // pointer (al8pidmlrc)
-            self.buffer.writeUB4(0)  // al8pidmlrcbl
-            self.buffer.writeInteger(UInt8(0))  // pointer (al8pidmlrcl)
+        if self.capabilities.ttcFieldVersion >= Constants.TNS_CCAP_FIELD_VERSION_12_1 {
+            if statementOptions.arrayDMLRowCounts {
+                self.buffer.writeInteger(UInt8(1))  // pointer (al8pidmlrc)
+                self.buffer.writeUB4(statementContext.executionCount)  // al8pidmlrcbl / numberOfExecutions
+                self.buffer.writeInteger(UInt8(1))  // pointer (al8pidmlrcl)
+            } else {
+                self.buffer.writeInteger(UInt8(0))  // pointer (al8pidmlrc)
+                self.buffer.writeUB4(0)  // al8pidmlrcbl
+                self.buffer.writeInteger(UInt8(0))  // pointer (al8pidmlrcl)
+            }
         }
         if self.capabilities.ttcFieldVersion
             >= Constants.TNS_CCAP_FIELD_VERSION_12_2
@@ -973,35 +975,49 @@ extension OracleFrontendMessageEncoder {
         let sessionKeyPartA = try decryptCBC(passwordHash, encodedServerKey)
 
         // generate second half of session key
-        let sessionKeyPartB = [UInt8].random(count: 32)
+        let sessionKeyPartB = [UInt8].random(count: sessionKeyPartA.count)
         let encodedClientKey = try encryptCBC(passwordHash, sessionKeyPartB)
-        sessionKey = String(
-            encodedClientKey.hexString.uppercased().prefix(64)
-        )
 
-        // create session key from combo key
-        guard let cskSalt = parameters["AUTH_PBKDF2_CSK_SALT"] else {
-            throw OracleSQLError.missingParameter(
-                expected: "AUTH_PBKDF2_CSK_SALT", in: parameters
+        // create combo key; a 48-byte server session key selects the legacy
+        // 11g/10g derivation, everything else uses the 12c PBKDF2 derivation
+        let comboKey: [UInt8]
+        if sessionKeyPartA.count != 48 {
+            sessionKey = String(
+                encodedClientKey.hexString.uppercased().prefix(64)
             )
-        }
-        let mixingSalt = try Array(_hexString: cskSalt.value)
-        guard
-            let sderCountStr = parameters["AUTH_PBKDF2_SDER_COUNT"],
-            let sderCount = Int(sderCountStr.value)
-        else {
-            throw OracleSQLError.missingParameter(
-                expected: "AUTH_PBKDF2_SDER_COUNT", in: parameters
+            guard let cskSalt = parameters["AUTH_PBKDF2_CSK_SALT"] else {
+                throw OracleSQLError.missingParameter(
+                    expected: "AUTH_PBKDF2_CSK_SALT", in: parameters
+                )
+            }
+            let mixingSalt = try Array(_hexString: cskSalt.value)
+            guard
+                let sderCountStr = parameters["AUTH_PBKDF2_SDER_COUNT"],
+                let sderCount = Int(sderCountStr.value)
+            else {
+                throw OracleSQLError.missingParameter(
+                    expected: "AUTH_PBKDF2_SDER_COUNT", in: parameters
+                )
+            }
+            let tempKey = Array(
+                sessionKeyPartB.prefix(keyLength) + sessionKeyPartA.prefix(keyLength)
             )
+            comboKey = try getDerivedKey(
+                key: Array(tempKey.hexString.uppercased().utf8),
+                salt: mixingSalt, length: keyLength, iterations: sderCount
+            )
+        } else {
+            sessionKey = String(
+                encodedClientKey.hexString.uppercased().prefix(96)
+            )
+            var mixed = [UInt8](repeating: 0, count: 24)
+            for i in 16..<40 {
+                mixed[i - 16] = sessionKeyPartA[i] ^ sessionKeyPartB[i]
+            }
+            let part1 = Array(Insecure.MD5.hash(data: Array(mixed[0..<16])))
+            let part2 = Array(Insecure.MD5.hash(data: Array(mixed[16..<24])))
+            comboKey = Array((part1 + part2).prefix(keyLength))
         }
-        let iterations = sderCount
-        let tempKey = Array(
-            sessionKeyPartB.prefix(keyLength) + sessionKeyPartA.prefix(keyLength)
-        )
-        let comboKey = try getDerivedKey(
-            key: Array(tempKey.hexString.uppercased().utf8),
-            salt: mixingSalt, length: keyLength, iterations: iterations
-        )
 
         // generate speedy key for 12c verifiers only
         if kind == .twelveC, let passwordKey {

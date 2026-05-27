@@ -114,13 +114,15 @@ extension OracleBackendMessage.Accept: OracleMessagePayloadEncodable {
         buffer.writeInteger(self.newCapabilities.protocolVersion, as: UInt16.self)
         buffer.writeInteger(self.newCapabilities.protocolOptions, as: UInt16.self)
         buffer.writeBytes(Array(repeating: UInt8(0), count: 20))  // random chunk
-        buffer.writeInteger(self.newCapabilities.sdu, as: UInt32.self)
-        if self.newCapabilities.protocolVersion >= Constants.TNS_VERSION_MIN_OOB_CHECK {
-            buffer.writeBytes(Array(repeating: UInt8(0), count: 5))  // more chunk
-            if self.newCapabilities.supportsFastAuth {
-                buffer.writeInteger(Constants.TNS_ACCEPT_FLAG_FAST_AUTH, as: UInt32.self)
-            } else {
-                buffer.writeInteger(0, as: UInt32.self)
+        if self.newCapabilities.protocolVersion >= Constants.TNS_VERSION_MIN_LARGE_SDU {
+            buffer.writeInteger(self.newCapabilities.sdu, as: UInt32.self)
+            if self.newCapabilities.protocolVersion >= Constants.TNS_VERSION_MIN_OOB_CHECK {
+                buffer.writeBytes(Array(repeating: UInt8(0), count: 5))  // more chunk
+                if self.newCapabilities.supportsFastAuth {
+                    buffer.writeInteger(Constants.TNS_ACCEPT_FLAG_FAST_AUTH, as: UInt32.self)
+                } else {
+                    buffer.writeInteger(0, as: UInt32.self)
+                }
             }
         }
     }
