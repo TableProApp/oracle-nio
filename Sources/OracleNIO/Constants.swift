@@ -238,7 +238,7 @@ enum Constants {
     // MARK: Versions
     static let TNS_VERSION_DESIRED: UInt16 = 319
     static let TNS_VERSION_MINIMUM: UInt16 = 300
-    static let TNS_VERSION_MIN_ACCEPTED: UInt16 = 315  // 12.1
+    static let TNS_VERSION_MIN_ACCEPTED: UInt16 = 313  // 11.1 (O5LOGON; pre-11.1 uses O3LOGON)
     static let TNS_VERSION_MIN_LARGE_SDU: UInt16 = 315
     static let TNS_VERSION_MIN_OOB_CHECK: UInt16 = 318
     static let TNS_VERSION_MIN_END_OF_RESPONSE: UInt16 = 319

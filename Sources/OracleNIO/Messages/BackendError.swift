@@ -65,7 +65,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
         try buffer.throwingSkipUB4()  // end of call status
         try buffer.throwingSkipUB2()  // end to end seq#
         try buffer.throwingSkipUB4()  // current row number
-        try buffer.throwingSkipUB2()  // error number
+        let earlyErrorNumber = UInt32(try buffer.throwingReadUB2())  // error number
         try buffer.throwingSkipUB2()  // array elem error
         try buffer.throwingSkipUB2()  // array elem error
         let cursorID = try buffer.throwingReadUB2()  // cursor id
@@ -87,56 +87,72 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
             buffer.skipRawBytesChunked()  // oerrdd (logical rowid)
         }
 
-        // batch error codes
-        let numberOfCodes = try buffer.throwingReadUB2()  // batch error codes array
         var batch = [OracleError]()
-        if numberOfCodes > 0 {
-            let firstByte = try buffer.throwingReadInteger(as: UInt8.self)
-            for _ in 0..<numberOfCodes {
-                if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
-                    try buffer.throwingSkipUB4()  // chunk length ignored
+        let number: UInt32
+        let rowCount: UInt64
+        if context.capabilities.ttcFieldVersion < Constants.TNS_CCAP_FIELD_VERSION_12_1 {
+            // Oracle 11.x carries the return code in the early error-number field and
+            // sends three empty length-prefixed batch chunks here, with no trailing
+            // number/row-count pair (unlike the 12c+ layout below).
+            for _ in 0..<3 {
+                let chunkLength = try buffer.throwingReadUB4()
+                if chunkLength > 0 {
+                    buffer.skipRawBytesChunked()
                 }
-                let errorCode = try buffer.throwingReadUB2()
-                batch.append(.init(code: Int(errorCode)))
             }
-            if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
-                try buffer.throwingSkipUB1()  // ignore end marker
-            }
-        }
-
-        // batch error offsets
-        let numberOfOffsets = try buffer.throwingReadUB2()  // batch error row offset array
-        if numberOfOffsets > 0 {
-            let firstByte = try buffer.throwingReadInteger(as: UInt8.self)
-            for i in 0..<numberOfOffsets {
-                if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
-                    try buffer.throwingSkipUB4()  // chunked length ignored
+            number = earlyErrorNumber
+            rowCount = 0
+        } else {
+            // batch error codes
+            let numberOfCodes = try buffer.throwingReadUB2()  // batch error codes array
+            if numberOfCodes > 0 {
+                let firstByte = try buffer.throwingReadInteger(as: UInt8.self)
+                for _ in 0..<numberOfCodes {
+                    if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
+                        try buffer.throwingSkipUB4()  // chunk length ignored
+                    }
+                    let errorCode = try buffer.throwingReadUB2()
+                    batch.append(.init(code: Int(errorCode)))
                 }
-                let offset = try buffer.throwingReadUB4()
-                batch[Int(i)].offset = Int(offset)
+                if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
+                    try buffer.throwingSkipUB1()  // ignore end marker
+                }
             }
-            if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
-                try buffer.throwingSkipUB1()  // ignore end marker
-            }
-        }
 
-        // batch error messages
-        let numberOfMessages = try buffer.throwingReadUB2()  // batch error messages array
-        if numberOfMessages > 0 {
-            try buffer.throwingSkipUB1()  // ignore packet size
-            for i in 0..<numberOfMessages {
-                try buffer.throwingSkipUB2()  // skip chunk length
-                let errorMessage =
-                    try buffer
-                    .readString()
-                    .replacing(/(^\s+|\s+$)/, with: "")
-                batch[Int(i)].message = errorMessage
-                try buffer.throwingMoveReaderIndex(forwardBy: 2)  // ignore end marker
+            // batch error offsets
+            let numberOfOffsets = try buffer.throwingReadUB2()  // batch error row offset array
+            if numberOfOffsets > 0 {
+                let firstByte = try buffer.throwingReadInteger(as: UInt8.self)
+                for i in 0..<numberOfOffsets {
+                    if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
+                        try buffer.throwingSkipUB4()  // chunked length ignored
+                    }
+                    let offset = try buffer.throwingReadUB4()
+                    batch[Int(i)].offset = Int(offset)
+                }
+                if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
+                    try buffer.throwingSkipUB1()  // ignore end marker
+                }
             }
-        }
 
-        let number = try buffer.throwingReadUB4()
-        let rowCount = try buffer.throwingReadUB8()
+            // batch error messages
+            let numberOfMessages = try buffer.throwingReadUB2()  // batch error messages array
+            if numberOfMessages > 0 {
+                try buffer.throwingSkipUB1()  // ignore packet size
+                for i in 0..<numberOfMessages {
+                    try buffer.throwingSkipUB2()  // skip chunk length
+                    let errorMessage =
+                        try buffer
+                        .readString()
+                        .replacing(/(^\s+|\s+$)/, with: "")
+                    batch[Int(i)].message = errorMessage
+                    try buffer.throwingMoveReaderIndex(forwardBy: 2)  // ignore end marker
+                }
+            }
+
+            number = try buffer.throwingReadUB4()
+            rowCount = try buffer.throwingReadUB8()
+        }
 
         // fields added with 20c
         if context.capabilities.ttcFieldVersion >= Constants.TNS_CCAP_FIELD_VERSION_20_1 {

@@ -61,16 +61,41 @@ import Testing
     }
 
     @Test func decodeUnsupportedVersion() throws {
+        // protocol version 312 (Oracle 10g) is below the 11.1 floor and uses the
+        // unsupported O3LOGON handshake, so it must be rejected
         let message = try ByteBuffer(
             bytes: Array(
                 hexString:
-                    "00 20 00 00 02 00 00 00 01 3a 04 01 20 00 20 00 01 00 00 00 00 20 c5 00 00 00 00 00 00 00 00 00"
+                    "00 20 00 00 02 00 00 00 01 38 04 01 20 00 20 00 01 00 00 00 00 20 c5 00 00 00 00 00 00 00 00 00"
                     .replacing(" ", with: "")
             ))
         #expect(
             throws: OracleSQLError.serverVersionNotSupported,
             performing: {
                 try ByteToMessageDecoderVerifier.verifyDecoder(inputOutputPairs: [(message, [])]) {
+                    OracleBackendMessageDecoder()
+                }
+            })
+    }
+
+    @Test func decode11gAccept() throws {
+        // a real Oracle 11.2 Accept packet: protocol version 314, 24-byte payload
+        // with no SDU or OOB fields (added in 12.1 / 12.2)
+        let message = try ByteBuffer(
+            bytes: Array(
+                hexString:
+                    "00 20 00 00 02 00 00 00 01 3a 04 01 20 00 20 00 01 00 00 00 00 20 c5 00 00 00 00 00 00 00 00 00"
+                    .replacing(" ", with: "")
+            ))
+        var capabilities = Capabilities()
+        capabilities.adjustForProtocol(version: 314, options: 0x0401, flags: 0)
+        let expected = Message(messages: [.accept(.init(newCapabilities: capabilities))])
+        #expect(
+            throws: Never.self,
+            performing: {
+                try ByteToMessageDecoderVerifier.verifyDecoder(
+                    inputOutputPairs: [(message, [[expected]])]
+                ) {
                     OracleBackendMessageDecoder()
                 }
             })

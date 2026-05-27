@@ -38,15 +38,21 @@ extension OracleBackendMessage {
             let protocolOptions =
                 try buffer.throwingReadInteger(as: UInt16.self)
 
-            buffer.moveReaderIndex(forwardBy: 20)
-            let sdu = try buffer.throwingReadInteger(as: UInt32.self)
-
             var caps = context.capabilities
+
+            buffer.moveReaderIndex(forwardBy: 20)
+            let sdu: UInt32
             let flags: UInt32
-            if protocolVersion >= Constants.TNS_VERSION_MIN_OOB_CHECK {
-                buffer.moveReaderIndex(forwardBy: 5)
-                flags = try buffer.throwingReadInteger(as: UInt32.self)
+            if protocolVersion >= Constants.TNS_VERSION_MIN_LARGE_SDU {
+                sdu = try buffer.throwingReadInteger(as: UInt32.self)
+                if protocolVersion >= Constants.TNS_VERSION_MIN_OOB_CHECK {
+                    buffer.moveReaderIndex(forwardBy: 5)
+                    flags = try buffer.throwingReadInteger(as: UInt32.self)
+                } else {
+                    flags = 0
+                }
             } else {
+                sdu = caps.sdu
                 flags = 0
             }
 
