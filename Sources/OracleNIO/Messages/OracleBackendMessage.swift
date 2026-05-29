@@ -38,11 +38,14 @@ enum OracleBackendMessage: Sendable, Hashable {
     typealias PayloadDecodable = OracleMessagePayloadDecodable
 
     case accept(Accept)
+    case advancedNegotiation(AdvancedNegotiation.Response)
     case bitVector(BitVector)
     case dataTypes(DataTypes)
     case describeInfo(DescribeInfo)
     case error(BackendError)
     case marker
+    case redirect(Redirect)
+    case refuse(Refuse)
     case lobData(LOBData)
     case parameter(Parameter)
     case `protocol`(`Protocol`)
@@ -63,6 +66,8 @@ extension OracleBackendMessage {
     /// Equivalent to ``PacketType``.
     enum ID: UInt8, Equatable {
         case accept = 2
+        case refuse = 4
+        case redirect = 5
         case data = 6
         case resend = 11
         case marker = 12
@@ -104,6 +109,16 @@ extension OracleBackendMessage {
                     element:
                         try .accept(.decode(from: &buffer, context: context))), true
             )
+        case .refuse:
+            return (
+                .init(element: try .refuse(.decode(from: &buffer, context: context))),
+                true
+            )
+        case .redirect:
+            return (
+                .init(element: try .redirect(.decode(from: &buffer, context: context))),
+                true
+            )
         case .marker:
             return (.init(element: .marker), true)
         case .control:
@@ -119,6 +134,19 @@ extension OracleBackendMessage {
             var messages: TinySequence<OracleBackendMessage> = []
             let flags = try buffer.throwingReadInteger(as: UInt16.self)
             let lastPacket = (flags & Constants.TNS_DATA_FLAGS_END_OF_REQUEST) != 0
+            // The advanced negotiation (native network encryption) response rides in a
+            // data packet but has no TTC message ID. It starts with the ANO magic, so
+            // peek for it before falling back to normal TTC parsing.
+            if buffer.getInteger(at: buffer.readerIndex, as: UInt32.self)
+                == Constants.TNS_ANO_MAGIC
+            {
+                do {
+                    let response = try AdvancedNegotiation.decodeResponse(from: &buffer)
+                    return (.init(element: .advancedNegotiation(response)), true)
+                } catch {
+                    throw OracleSQLError.advancedNegotiationFailed
+                }
+            }
             try self.decodeData(from: &buffer, into: &messages, context: context)
             return (messages, lastPacket)
         }
@@ -257,12 +285,18 @@ extension OracleBackendMessage: CustomDebugStringConvertible {
         switch self {
         case .accept(let accept):
             return ".accept(\(String(reflecting: accept)))"
+        case .advancedNegotiation(let response):
+            return ".advancedNegotiation(\(String(reflecting: response)))"
         case .bitVector(let bitVector):
             return ".bitVector(\(String(reflecting: bitVector)))"
         case .dataTypes:
             return ".dataTypes"
         case .error(let error):
             return ".error(\(String(reflecting: error)))"
+        case .redirect(let redirect):
+            return ".redirect(\(String(reflecting: redirect)))"
+        case .refuse(let refuse):
+            return ".refuse(\(String(reflecting: refuse)))"
         case .marker:
             return ".marker"
         case .parameter(let parameter):

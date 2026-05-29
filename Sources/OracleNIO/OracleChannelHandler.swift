@@ -44,6 +44,7 @@ final class OracleChannelHandler: ChannelDuplexHandler {
     private let currentSSLHandler: NIOSSLClientHandler?
 
     private let postprocessor: OracleFrontendMessagePostProcessor
+    private let securityBox: OracleNetworkSecurityBox
     private var capabilities: Capabilities {
         didSet {
             self.decoderContext.capabilities = self.capabilities
@@ -60,13 +61,15 @@ final class OracleChannelHandler: ChannelDuplexHandler {
         configuration: OracleConnection.Configuration,
         logger: Logger,
         sslHandler: NIOSSLClientHandler?,
-        postprocessor: OracleFrontendMessagePostProcessor
+        postprocessor: OracleFrontendMessagePostProcessor,
+        securityBox: OracleNetworkSecurityBox = OracleNetworkSecurityBox()
     ) {
         self.state = ConnectionStateMachine()
         self.configuration = configuration
         self.logger = logger
         self.currentSSLHandler = sslHandler
         self.postprocessor = postprocessor
+        self.securityBox = securityBox
 
         var capabilities = Capabilities()
         #if os(Windows)
@@ -78,7 +81,9 @@ final class OracleChannelHandler: ChannelDuplexHandler {
                 capabilities.supportsOOB = !configuration.disableOOB
             }
         #endif
-        self.decoderContext = .init(capabilities: capabilities)
+        self.decoderContext = .init(
+            capabilities: capabilities, securityBox: securityBox
+        )
         self.capabilities = capabilities
     }
 
@@ -170,12 +175,18 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             action = self.state.acceptReceived(
                 accept, description: configuration.getDescription()
             )
+        case .advancedNegotiation(let response):
+            action = self.state.advancedNegotiationReceived(response)
         case .bitVector(let bitVector):
             action = self.state.bitVectorReceived(bitVector)
         case .dataTypes:
             action = self.state.dataTypesReceived()
         case .error(let error):
             action = self.state.backendErrorReceived(error)
+        case .redirect(let redirect):
+            action = self.state.redirectReceived(redirect)
+        case .refuse(let refuse):
+            action = self.state.refuseReceived(refuse)
         case .marker:
             action = self.state.markerReceived()
         case .parameter(let parameter):
@@ -335,6 +346,15 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             context.writeAndFlush(self.wrapOutboundOut(ByteBuffer(bytes: "!".ascii)), promise: nil)
             self.encoder.marker()
             context.writeAndFlush(self.wrapOutboundOut(self.encoder.flush()), promise: nil)
+        case .sendAdvancedNegotiation:
+            self.encoder.advancedNegotiation()
+            context.writeAndFlush(
+                self.wrapOutboundOut(self.encoder.flush()), promise: nil
+            )
+        case .activateNativeNetworkEncryption(let response, let fastAuth):
+            self.activateNativeNetworkEncryption(
+                response, fastAuth: fastAuth, context: context
+            )
         case .sendProtocol:
             self.encoder.protocol()
             context.writeAndFlush(
@@ -614,6 +634,54 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             context.writeAndFlush(
                 self.wrapOutboundOut(message), promise: nil
             )
+        }
+    }
+
+    private func activateNativeNetworkEncryption(
+        _ response: AdvancedNegotiation.Response,
+        fastAuth: Bool,
+        context: ChannelHandlerContext
+    ) {
+        do {
+            // When the server requested Diffie-Hellman key exchange, send the client
+            // public key before installing the cipher. The exchange and cipher share
+            // the same private key, so derive both together.
+            if let prime = response.dhPrime,
+                let generator = response.dhGenerator,
+                let serverPublicKey = response.dhServerPublicKey,
+                let iv = response.dhIV
+            {
+                let privateKey = OracleNetworkSecurity.randomPrivateKey(byteLength: prime.count)
+                let exchange = try OracleNetworkSecurity.diffieHellmanSharedKey(
+                    generator: generator, prime: prime, serverPublicKey: serverPublicKey,
+                    privateKey: privateKey
+                )
+                // Write the client public key in clear, then install the cipher. The
+                // write is enqueued before this returns, so it goes out unencrypted;
+                // every later outbound packet (starting with protocol negotiation) is
+                // encrypted and checksummed.
+                self.encoder.advancedNegotiationClientPublicKey(exchange.publicKey)
+                context.writeAndFlush(
+                    self.wrapOutboundOut(self.encoder.flush()), promise: nil
+                )
+                self.securityBox.security = try OracleNetworkSecurity.make(
+                    from: response, sharedKey: exchange.shared, iv: iv
+                )
+            }
+            self.logger.debug(
+                "Native network encryption negotiated",
+                metadata: [
+                    "encryption_algorithm": "\(response.encryptionAlgorithmID)",
+                    "checksum_algorithm": "\(response.dataIntegrityAlgorithmID)",
+                ]
+            )
+            let action = self.state.nativeNetworkEncryptionActivated(fastAuth: fastAuth)
+            self.run(action, with: context)
+        } catch {
+            let action = self.state.errorHappened(
+                .connectionError(underlying: error)
+            )
+            self.run(action, with: context)
         }
     }
 

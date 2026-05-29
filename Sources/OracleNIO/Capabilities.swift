@@ -30,6 +30,20 @@ struct Capabilities: Sendable, Hashable {
     var supportsEndOfRequest = false
     var maxStringSize: UInt32 = 0
     var sdu: UInt32 = UInt32(Constants.TNS_SDU)
+    var acceptFlags0: UInt8 = 0
+    var acceptFlags1: UInt8 = 0
+
+    /// Whether to run the native network encryption (ANO) handshake after accept.
+    ///
+    /// The client advertises ANO at the JDBC default "ACCEPTED" level (ACFL0 bit0 in
+    /// the connect packet, never `DISABLE_NA`). The negotiation is then always run:
+    /// a server that requires encryption negotiates AES, and a server with encryption
+    /// off returns algorithm id 0 and the connection proceeds unencrypted. The server
+    /// clears `DISABLE_NA` (ACFL0 bit2) when it understands ANO; some servers do not
+    /// echo the support bit, so we gate only on the no-disable bit.
+    var supportsAdvancedNegotiation: Bool {
+        (acceptFlags0 & 0x04) == 0 && (acceptFlags1 & 0x08) == 0
+    }
 
     // MARK: Compile Capabilities
     var ttcFieldVersion: UInt8 = Constants.TNS_CCAP_FIELD_VERSION_MAX
@@ -108,6 +122,8 @@ struct Capabilities: Sendable, Hashable {
         self.maxStringSize = try buffer.throwingReadInteger()
         self.sdu = try buffer.throwingReadInteger()
         self.ttcFieldVersion = try buffer.throwingReadInteger()
+        self.acceptFlags0 = try buffer.throwingReadInteger()
+        self.acceptFlags1 = try buffer.throwingReadInteger()
     }
 
     /// Encodes all the properties of capabilities except the runtime and compile time capabilities.
@@ -123,11 +139,18 @@ struct Capabilities: Sendable, Hashable {
         buffer.writeInteger(self.maxStringSize)
         buffer.writeInteger(self.sdu)
         buffer.writeInteger(self.ttcFieldVersion)
+        buffer.writeInteger(self.acceptFlags0)
+        buffer.writeInteger(self.acceptFlags1)
     }
 
-    mutating func adjustForProtocol(version: UInt16, options: UInt16, flags: UInt32) {
+    mutating func adjustForProtocol(
+        version: UInt16, options: UInt16, flags: UInt32,
+        acceptFlags0: UInt8 = 0, acceptFlags1: UInt8 = 0
+    ) {
         self.protocolVersion = version
         self.protocolOptions = options
+        self.acceptFlags0 = acceptFlags0
+        self.acceptFlags1 = acceptFlags1
         self.supportsOOB = options & Constants.TNS_GSO_CAN_RECV_ATTENTION != 0
         if (flags & Constants.TNS_ACCEPT_FLAG_FAST_AUTH) != 0 {
             self.supportsFastAuth = true

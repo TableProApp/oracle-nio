@@ -159,12 +159,16 @@ public final class OracleConnection: Sendable {
             }
         }
 
-        let frontendMessageHandler = OracleFrontendMessagePostProcessor()
+        let securityBox = OracleNetworkSecurityBox()
+        let frontendMessageHandler = OracleFrontendMessagePostProcessor(
+            securityBox: securityBox
+        )
         let channelHandler = OracleChannelHandler(
             configuration: configuration,
             logger: logger,
             sslHandler: sslHandler,
-            postprocessor: frontendMessageHandler
+            postprocessor: frontendMessageHandler,
+            securityBox: securityBox
         )
 
         let eventHandler = OracleEventsHandler(logger: logger)

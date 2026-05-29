@@ -12,19 +12,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Foundation
 import NIOCore
-
-#if canImport(FoundationEssentials)
-    import FoundationEssentials
-#else
-    import Foundation
-#endif
 
 struct ConnectionStateMachine {
     enum State {
         case initialized
         case connectMessageSent
-        case oobCheckInProgress(fastAuth: Bool)
+        case oobCheckInProgress(fastAuth: Bool, negotiateANO: Bool)
+        case advancedNegotiationSent(fastAuth: Bool)
         case protocolMessageSent
         case dataTypesMessageSent
         case waitingToStartAuthentication
@@ -45,6 +41,28 @@ struct ConnectionStateMachine {
         case renegotiatingTLS
 
         case modifying
+
+        /// A short, credential-free label for the handshake phase, used to diagnose an
+        /// unclean shutdown. A drop after ``dataTypesMessageSent`` or while authenticating
+        /// points at native network encryption being required; a drop at
+        /// ``connectMessageSent`` points at a TLS-only endpoint or a pre-accept refusal.
+        var handshakePhase: String {
+            switch self {
+            case .initialized: return "initialized"
+            case .connectMessageSent: return "connect"
+            case .oobCheckInProgress: return "oobCheck"
+            case .advancedNegotiationSent: return "advancedNegotiation"
+            case .protocolMessageSent: return "protocolNegotiation"
+            case .dataTypesMessageSent: return "dataTypeNegotiation"
+            case .waitingToStartAuthentication: return "preAuthentication"
+            case .authenticating: return "authentication"
+            case .renegotiatingTLS: return "tlsRenegotiation"
+            case .readyForStatement, .statement, .ping, .commit, .rollback,
+                .lobOperation, .readyToLogOff, .loggingOff, .closing, .closed,
+                .modifying:
+                return "established"
+            }
+        }
     }
 
     enum QuiescingState {
@@ -97,6 +115,8 @@ struct ConnectionStateMachine {
         // Connection Establishment Actions
         case sendConnect
         case sendOOBCheck
+        case sendAdvancedNegotiation
+        case activateNativeNetworkEncryption(AdvancedNegotiation.Response, fastAuth: Bool)
         case sendProtocol
         case sendDataTypes
 
@@ -200,6 +220,7 @@ struct ConnectionStateMachine {
             )
         case .connectMessageSent,
             .oobCheckInProgress,
+            .advancedNegotiationSent,
             .protocolMessageSent,
             .dataTypesMessageSent,
             .waitingToStartAuthentication,
@@ -212,7 +233,9 @@ struct ConnectionStateMachine {
             .lobOperation,
             .readyToLogOff,
             .renegotiatingTLS:
-            return self.errorHappened(.uncleanShutdown)
+            var error = OracleSQLError.uncleanShutdown
+            error.handshakePhase = self.state.handshakePhase
+            return self.errorHappened(error)
         case .loggingOff, .closing:
             self.state = .closed
             self.quiescingState = .notQuiescing
@@ -231,6 +254,7 @@ struct ConnectionStateMachine {
         switch self.state {
         case .connectMessageSent,
             .oobCheckInProgress,
+            .advancedNegotiationSent,
             .dataTypesMessageSent,
             .protocolMessageSent,
             .waitingToStartAuthentication,
@@ -281,6 +305,7 @@ struct ConnectionStateMachine {
             case .initialized,
                 .connectMessageSent,
                 .oobCheckInProgress,
+            .advancedNegotiationSent,
                 .protocolMessageSent,
                 .dataTypesMessageSent,
                 .waitingToStartAuthentication,
@@ -333,6 +358,7 @@ struct ConnectionStateMachine {
         switch self.state {
         case .initialized,
             .oobCheckInProgress,
+            .advancedNegotiationSent,
             .connectMessageSent,
             .protocolMessageSent,
             .dataTypesMessageSent,
@@ -396,34 +422,94 @@ struct ConnectionStateMachine {
             && capabilities.supportsOOBCheck
             && capabilities.protocolVersion >= Constants.TNS_VERSION_MIN_OOB_CHECK
         {
-            self.state = .oobCheckInProgress(fastAuth: capabilities.supportsOOB)
+            self.state = .oobCheckInProgress(
+                fastAuth: capabilities.supportsFastAuth,
+                negotiateANO: capabilities.supportsAdvancedNegotiation
+            )
             return .sendOOBCheck
         }
 
-        // Starting in 23ai, fast authentication is possible.
-        // Let's see if the server supports it.
-        if capabilities.supportsFastAuth {
-            self.state = .waitingToStartAuthentication
-            return .provideAuthenticationContext(.allowed)
-        }
-
-        self.state = .protocolMessageSent
-        return .sendProtocol
+        return self.startNegotiationOrAuthentication(
+            negotiateANO: capabilities.supportsAdvancedNegotiation,
+            fastAuth: capabilities.supportsFastAuth
+        )
     }
 
-    mutating func oobCheckComplete() -> ConnectionAction {
-        guard case .oobCheckInProgress(let fastAuth) = self.state else {
-            assertionFailure("Why are we completing an OOB check when there isn't one in progress?")
-            return self.errorHappened(.unexpectedBackendMessage(.resetOOB))
+    /// Picks the next handshake step after the accept (and optional OOB check).
+    /// Native network encryption, when the server supports it, must run before
+    /// protocol/datatype negotiation, otherwise an NNE-required server drops the
+    /// connection.
+    private mutating func startNegotiationOrAuthentication(
+        negotiateANO: Bool, fastAuth: Bool
+    ) -> ConnectionAction {
+        if negotiateANO {
+            self.state = .advancedNegotiationSent(fastAuth: fastAuth)
+            return .sendAdvancedNegotiation
         }
+        return self.proceedAfterNegotiation(fastAuth: fastAuth)
+    }
 
+    /// The step after native network encryption (or directly after accept when ANO
+    /// is not negotiated). Fast auth (23ai) skips protocol/datatype negotiation.
+    private mutating func proceedAfterNegotiation(fastAuth: Bool) -> ConnectionAction {
         if fastAuth {
             self.state = .waitingToStartAuthentication
             return .provideAuthenticationContext(.allowed)
         }
-
         self.state = .protocolMessageSent
         return .sendProtocol
+    }
+
+    mutating func advancedNegotiationReceived(
+        _ response: AdvancedNegotiation.Response
+    ) -> ConnectionAction {
+        guard case .advancedNegotiationSent(let fastAuth) = self.state else {
+            return self.errorHappened(
+                .unexpectedBackendMessage(.advancedNegotiation(response))
+            )
+        }
+        return .activateNativeNetworkEncryption(response, fastAuth: fastAuth)
+    }
+
+    /// Called by the channel handler once the negotiated cipher has been installed.
+    mutating func nativeNetworkEncryptionActivated(fastAuth: Bool) -> ConnectionAction {
+        // After native network encryption, always run explicit protocol and datatype
+        // negotiation rather than the 23ai fast-auth bundle. The server processes the
+        // first encrypted packet as protocol negotiation; fast auth's combined packet
+        // is rejected once encryption is active.
+        _ = fastAuth
+        self.state = .protocolMessageSent
+        return .sendProtocol
+    }
+
+    mutating func refuseReceived(
+        _ refuse: OracleBackendMessage.Refuse
+    ) -> ConnectionAction {
+        self.errorHappened(.connectionError(underlying: refuse.refusedError))
+    }
+
+    mutating func redirectReceived(
+        _ redirect: OracleBackendMessage.Redirect
+    ) -> ConnectionAction {
+        self.errorHappened(
+            .connectionError(
+                underlying: OracleRedirectError(
+                    address: redirect.address,
+                    connectData: redirect.connectData
+                )
+            )
+        )
+    }
+
+    mutating func oobCheckComplete() -> ConnectionAction {
+        guard case .oobCheckInProgress(let fastAuth, let negotiateANO) = self.state else {
+            assertionFailure("Why are we completing an OOB check when there isn't one in progress?")
+            return self.errorHappened(.unexpectedBackendMessage(.resetOOB))
+        }
+
+        return self.startNegotiationOrAuthentication(
+            negotiateANO: negotiateANO, fastAuth: fastAuth
+        )
     }
 
     mutating func protocolReceived() -> ConnectionAction {
@@ -471,6 +557,8 @@ struct ConnectionStateMachine {
             return .wait
         case .loggingOff(let promise):
             return .logoffConnection(promise)
+        case .advancedNegotiationSent:
+            return .sendAdvancedNegotiation
         case .oobCheckInProgress, .renegotiatingTLS:
             fatalError("Does this even happen?")
 
@@ -503,6 +591,7 @@ struct ConnectionStateMachine {
         switch self.state {
         case .initialized,
             .oobCheckInProgress,
+            .advancedNegotiationSent,
             .connectMessageSent,
             .protocolMessageSent,
             .dataTypesMessageSent,
@@ -543,6 +632,9 @@ struct ConnectionStateMachine {
         case .oobCheckInProgress:
             return self.oobCheckComplete()
 
+        case .advancedNegotiationSent:
+            preconditionFailure("Invalid state: \(self.state)")
+
         case .connectMessageSent,
             .protocolMessageSent,
             .dataTypesMessageSent,
@@ -574,7 +666,7 @@ struct ConnectionStateMachine {
         _ status: OracleBackendMessage.Status
     ) -> ConnectionAction {
         switch self.state {
-        case .initialized, .oobCheckInProgress:
+        case .initialized, .oobCheckInProgress, .advancedNegotiationSent:
             preconditionFailure("Invalid state: \(self.state)")
 
         case .connectMessageSent,
@@ -879,6 +971,7 @@ struct ConnectionStateMachine {
         case .initialized,
             .connectMessageSent,
             .oobCheckInProgress,
+            .advancedNegotiationSent,
             .protocolMessageSent,
             .dataTypesMessageSent,
             .waitingToStartAuthentication,
@@ -1059,7 +1152,8 @@ extension ConnectionStateMachine {
             .sidNotSupported,
             .uncleanShutdown,
             .unsupportedDataType,
-            .unsupportedVerifierType:
+            .unsupportedVerifierType,
+            .advancedNegotiationFailed:
             return true
         case .statementCancelled, .nationalCharsetNotSupported, .missingStatement, .malformedStatement:
             return false

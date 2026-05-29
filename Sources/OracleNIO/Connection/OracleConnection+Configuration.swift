@@ -391,6 +391,23 @@ extension OracleConnection {
                 """
             return description.buildConnectString(cid)
         }
+
+        /// Returns a copy of this configuration pointed at the address from a TNS redirect,
+        /// or `nil` when the redirect cannot be followed (no parseable target, an
+        /// externally supplied channel, or a redirect back to the current address).
+        internal func followingRedirect(
+            _ redirect: OracleRedirectError
+        ) -> OracleConnection.Configuration? {
+            guard case .connectTCP = self.endpointInfo else { return nil }
+            guard let target = OracleBackendMessage.Redirect(
+                address: redirect.address, connectData: redirect.connectData
+            ).target else { return nil }
+            guard target.host != self.host || target.port != self.port else { return nil }
+
+            var copy = self
+            copy.endpointInfo = .connectTCP(host: target.host, port: target.port)
+            return copy
+        }
     }
 }
 

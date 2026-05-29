@@ -40,6 +40,13 @@ extension OracleBackendMessage {
 
             var caps = context.capabilities
 
+            // The accept connect flags live at body offset 22 and 23. The reader is at
+            // offset 4 after the version and options, so byte 18 and 19 from here.
+            let acceptFlags0 =
+                buffer.getInteger(at: buffer.readerIndex + 18, as: UInt8.self) ?? 0
+            let acceptFlags1 =
+                buffer.getInteger(at: buffer.readerIndex + 19, as: UInt8.self) ?? 0
+
             buffer.moveReaderIndex(forwardBy: 20)
             let sdu: UInt32
             let flags: UInt32
@@ -58,7 +65,8 @@ extension OracleBackendMessage {
 
             caps.sdu = sdu
             caps.adjustForProtocol(
-                version: protocolVersion, options: protocolOptions, flags: flags
+                version: protocolVersion, options: protocolOptions, flags: flags,
+                acceptFlags0: acceptFlags0, acceptFlags1: acceptFlags1
             )
 
             return .init(newCapabilities: caps)
