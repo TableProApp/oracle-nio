@@ -253,6 +253,36 @@ enum Constants {
     static let TNS_NSI_DISABLE_NA: UInt8 = 0x04
     static let TNS_NSI_SUPPORT_SECURITY_RENEG: UInt8 = 0x80
 
+    // MARK: Native Network Encryption (Advanced Networking Option)
+    static let TNS_ANO_MAGIC: UInt32 = 0xDEAD_BEEF
+    static let TNS_ANO_VERSION: UInt32 = 0x0B20_0200
+    static let TNS_ANO_SERVICE_AUTH = 1
+    static let TNS_ANO_SERVICE_ENCRYPTION = 2
+    static let TNS_ANO_SERVICE_DATA_INTEGRITY = 3
+    static let TNS_ANO_SERVICE_SUPERVISOR = 4
+    static let TNS_ANO_STATUS_SUPERVISOR = 31
+    static let TNS_ANO_TYPE_STRING = 0
+    static let TNS_ANO_TYPE_BYTES = 1
+    static let TNS_ANO_TYPE_UB1 = 2
+    static let TNS_ANO_TYPE_UB2 = 3
+    static let TNS_ANO_TYPE_UB4 = 4
+    static let TNS_ANO_TYPE_VERSION = 5
+    static let TNS_ANO_TYPE_STATUS = 6
+    /// Sent as ACFL0/ACFL1 in the connect packet. The server echoes them in the
+    /// accept packet and uses them to gate native network encryption.
+    static let TNS_ACCEPT_CONNECT_FLAG_0: UInt8 = 0x01
+    static let TNS_ACCEPT_CONNECT_FLAG_1: UInt8 = 0x01
+    /// Encryption algorithm IDs.
+    static let TNS_ANO_ENC_AES128 = 15
+    static let TNS_ANO_ENC_AES192 = 16
+    static let TNS_ANO_ENC_AES256 = 17
+    /// Data-integrity (crypto-checksum) algorithm IDs.
+    static let TNS_ANO_DI_MD5 = 1
+    static let TNS_ANO_DI_SHA1 = 3
+    static let TNS_ANO_DI_SHA512 = 4
+    static let TNS_ANO_DI_SHA256 = 5
+    static let TNS_ANO_DI_SHA384 = 6
+
     // MARK: Other connection constants
     static let TNS_PROTOCOL_CHARACTERISTICS: UInt16 = 0x4f98
     static let TNS_CHECK_OOB: UInt32 = 0x01

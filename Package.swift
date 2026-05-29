@@ -33,6 +33,7 @@ let package = Package(
         .package(
             url: "https://github.com/swiftlang/swift-syntax.git",
             "601.0.0-latest"..."602.0.0-latest"),
+        .package(url: "https://github.com/attaswift/BigInt.git", from: "5.3.0"),
     ],
     targets: [
         .target(
@@ -56,6 +57,7 @@ let package = Package(
                 .product(name: "NIOTLS", package: "swift-nio"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
+                .product(name: "BigInt", package: "BigInt"),
                 .product(
                     name: "Tracing",
                     package: "swift-distributed-tracing",
@@ -71,6 +73,8 @@ let package = Package(
             dependencies: [
                 "OracleNIO",
                 .product(name: "NIOTestUtils", package: "swift-nio"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "BigInt", package: "BigInt"),
             ]
         ),
         .testTarget(

@@ -39,6 +39,7 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
     @usableFromInline
     final class Context {
         var capabilities: Capabilities
+        let securityBox: OracleNetworkSecurityBox
 
         private var _statementContext: StatementContext?
         var statementContext: StatementContext? {
@@ -62,8 +63,12 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
         var lobContext: LOBOperationContext?
 
         @usableFromInline
-        init(capabilities: Capabilities) {
+        init(
+            capabilities: Capabilities,
+            securityBox: OracleNetworkSecurityBox = OracleNetworkSecurityBox()
+        ) {
             self.capabilities = capabilities
+            self.securityBox = securityBox
         }
 
         func clearStatementContext() {
@@ -169,8 +174,17 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
             return nil
         }
 
+        if type == .accept {
+        }
+
         // skip header
         packet.moveReaderIndex(to: Self.headerSize)
+
+        // Once native network encryption is active, decrypt the data-packet body
+        // (after the 2-byte data flags) before TTC parsing or partial reassembly.
+        if type == .data, self.context.securityBox.isActive {
+            packet = try self.decryptDataPacket(packet)
+        }
 
         if let partial, partial.readableBytes > 0 {
             // insert after flags if packet is data
@@ -213,5 +227,28 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
                 "Expected to only see `OraclePartialDecodingError`s here."
             )
         }
+    }
+
+    /// Replaces an encrypted data-packet body with its plaintext. The 8-byte header
+    /// and 2-byte data flags stay in clear; the rest is decrypted and the trailing
+    /// checksum (if any) is validated and stripped.
+    private func decryptDataPacket(_ packet: ByteBuffer) throws -> ByteBuffer {
+        var source = packet
+        guard let dataFlags = source.readInteger(as: UInt16.self) else {
+            return packet
+        }
+        let body = source.readBytes(length: source.readableBytes) ?? []
+        if body.isEmpty {
+            return packet
+        }
+        let plain = try self.context.securityBox.unprotect(body)
+
+        var output = ByteBuffer()
+        output.reserveCapacity(Self.headerSize + MemoryLayout<UInt16>.size + plain.count)
+        output.writeRepeatingByte(0, count: Self.headerSize)
+        output.writeInteger(dataFlags)
+        output.writeBytes(plain)
+        output.moveReaderIndex(to: Self.headerSize)
+        return output
     }
 }

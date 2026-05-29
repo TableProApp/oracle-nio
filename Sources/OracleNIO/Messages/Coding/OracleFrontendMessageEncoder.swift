@@ -124,9 +124,12 @@ struct OracleFrontendMessageEncoder {
         var serviceOptions = Constants.TNS_GSO_DONT_CARE
         let connectFlags1: UInt32 = 0
         var connectFlags2: UInt32 = 0
-        let nsiFlags: UInt8 =
-            Constants.TNS_NSI_SUPPORT_SECURITY_RENEG
-            | Constants.TNS_NSI_DISABLE_NA
+        // ACFL0/ACFL1. The server echoes these in the accept packet. Advertising
+        // 0x01 keeps native network encryption negotiable so an NNE-required server
+        // proceeds (matching the JDBC thin driver). Setting DISABLE_NA here would make
+        // the server drop the connection after datatype negotiation.
+        let nsiFlags0: UInt8 = Constants.TNS_ACCEPT_CONNECT_FLAG_0
+        let nsiFlags1: UInt8 = Constants.TNS_ACCEPT_CONNECT_FLAG_1
         if capabilities.supportsOOB {
             serviceOptions |= Constants.TNS_GSO_CAN_RECV_ATTENTION
             connectFlags2 |= Constants.TNS_CHECK_OOB
@@ -148,8 +151,8 @@ struct OracleFrontendMessageEncoder {
         self.buffer.writeMultipleIntegers(
             UInt16(74),  // offset to connect data
             UInt32(0),  // max receivable data
-            nsiFlags,
-            nsiFlags,
+            nsiFlags0,
+            nsiFlags1,
             UInt64(0),  // obsolete
             UInt64(0),  // obsolete
             UInt64(0),  // obsolete
@@ -224,6 +227,22 @@ struct OracleFrontendMessageEncoder {
 
         self.startRequest()
         self.dataTypes0()
+        self.endRequest()
+    }
+
+    mutating func advancedNegotiation() {
+        self.clearIfNeeded()
+
+        self.startRequest()
+        AdvancedNegotiation.encodeRequest(into: &self.buffer)
+        self.endRequest()
+    }
+
+    mutating func advancedNegotiationClientPublicKey(_ publicKey: [UInt8]) {
+        self.clearIfNeeded()
+
+        self.startRequest()
+        AdvancedNegotiation.encodeClientPublicKey(publicKey, into: &self.buffer)
         self.endRequest()
     }
 

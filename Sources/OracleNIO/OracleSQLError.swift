@@ -45,6 +45,7 @@ public struct OracleSQLError: Sendable, Error {
             case unsupportedDataType
             case missingStatement
             case malformedStatement
+            case advancedNegotiationFailed
             case unsupportedVerifierType(UInt32)
         }
 
@@ -94,6 +95,11 @@ public struct OracleSQLError: Sendable, Error {
         @inlinable
         public static var uncleanShutdown: Self {
             Self(.uncleanShutdown)
+        }
+
+        @inlinable
+        public static var advancedNegotiationFailed: Self {
+            Self(.advancedNegotiationFailed)
         }
 
         @inlinable
@@ -165,6 +171,8 @@ public struct OracleSQLError: Sendable, Error {
                 return "nationalCharsetNotSupported"
             case .uncleanShutdown:
                 return "uncleanShutdown"
+            case .advancedNegotiationFailed:
+                return "advancedNegotiationFailed"
             case .unexpectedBackendMessage:
                 return "unexpectedBackendMessage"
             case .server:
@@ -226,6 +234,20 @@ public struct OracleSQLError: Sendable, Error {
         set {
             self.copyBackingStorageIfNecessary()
             self.backing.underlying = newValue
+        }
+    }
+
+    /// The handshake phase at which a connection was dropped, for an ``Code/uncleanShutdown``.
+    ///
+    /// Carries no credentials or payload bytes. A drop at `dataTypeNegotiation` or
+    /// `authentication` indicates the server requires native network encryption; a drop
+    /// at `connect` indicates a TLS-only endpoint or a pre-accept refusal.
+    @inlinable
+    public internal(set) var handshakePhase: String? {
+        get { self.backing.handshakePhase }
+        set {
+            self.copyBackingStorageIfNecessary()
+            self.backing.handshakePhase = newValue
         }
     }
 
@@ -294,6 +316,8 @@ public struct OracleSQLError: Sendable, Error {
         @usableFromInline
         /* fileprivate */ var underlying: Error?
         @usableFromInline
+        /* fileprivate */ var handshakePhase: String?
+        @usableFromInline
         /* fileprivate */ var file: String?
         @usableFromInline
         /* fileprivate */ var line: Int?
@@ -310,6 +334,7 @@ public struct OracleSQLError: Sendable, Error {
             let new = Self.init(code: self.code)
             new.serverInfo = self.serverInfo
             new.underlying = self.underlying
+            new.handshakePhase = self.handshakePhase
             new.file = self.file
             new.line = self.line
             new.statement = self.statement
@@ -414,6 +439,10 @@ public struct OracleSQLError: Sendable, Error {
     @inlinable
     static var uncleanShutdown: OracleSQLError {
         OracleSQLError(code: .uncleanShutdown)
+    }
+
+    static var advancedNegotiationFailed: OracleSQLError {
+        OracleSQLError(code: .advancedNegotiationFailed)
     }
 
     @inlinable
@@ -531,6 +560,10 @@ extension OracleSQLError: CustomStringConvertible {
             result.append(", underlying: \(String(reflecting: underlying))")
         }
 
+        if let handshakePhase = self.handshakePhase {
+            result.append(", handshakePhase: \(handshakePhase)")
+        }
+
         if self.file != nil {
             result.append(", triggeredFromRequestInFile: ********")
             if self.line != nil {
@@ -576,6 +609,10 @@ extension OracleSQLError: CustomDebugStringConvertible {
 
         if let underlying {
             result.append(", underlying: \(String(reflecting: underlying))")
+        }
+
+        if let handshakePhase {
+            result.append(", handshakePhase: \(handshakePhase)")
         }
 
         if let file {
