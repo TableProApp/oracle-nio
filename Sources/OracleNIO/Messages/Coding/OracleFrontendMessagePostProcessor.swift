@@ -131,5 +131,4 @@ final class OracleFrontendMessagePostProcessor: ChannelOutboundHandler {
         output.prepareSend(packetType: .data, protocolVersion: self.protocolVersion)
         return output
     }
-
 }

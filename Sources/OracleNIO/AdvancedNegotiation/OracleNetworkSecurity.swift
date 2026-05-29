@@ -258,8 +258,8 @@ struct OracleNetworkSecurity {
     @usableFromInline
     mutating func protect(_ payload: [UInt8]) throws -> [UInt8] {
         var data = payload
-        if self.dataIntegrity != nil {
-            data = self.dataIntegrity!.compute(data)
+        if let checksummed = self.dataIntegrity?.compute(data) {
+            data = checksummed
         }
         if let cipher = self.cipher {
             data = try cipher.encrypt(data)
@@ -277,8 +277,8 @@ struct OracleNetworkSecurity {
         /// peer's send keystream (the one this side's ``unprotect`` verifies). Test-only.
         mutating func protectAsPeer(_ payload: [UInt8]) throws -> [UInt8] {
             var data = payload
-            if self.dataIntegrity != nil {
-                data = self.dataIntegrity!.peerCompute(data)
+            if let checksummed = self.dataIntegrity?.peerCompute(data) {
+                data = checksummed
             }
             if let cipher = self.cipher {
                 data = try cipher.encrypt(data)
@@ -305,8 +305,8 @@ struct OracleNetworkSecurity {
         if let cipher = self.cipher {
             data = try cipher.decrypt(data)
         }
-        if self.dataIntegrity != nil {
-            data = try self.dataIntegrity!.validate(data)
+        if let validated = try self.dataIntegrity?.validate(data) {
+            data = validated
         }
         return data
     }

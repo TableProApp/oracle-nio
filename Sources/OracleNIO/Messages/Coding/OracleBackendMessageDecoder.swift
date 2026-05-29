@@ -174,9 +174,6 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
             return nil
         }
 
-        if type == .accept {
-        }
-
         // skip header
         packet.moveReaderIndex(to: Self.headerSize)
 

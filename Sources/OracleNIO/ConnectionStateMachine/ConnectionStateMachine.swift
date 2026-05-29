@@ -20,7 +20,7 @@ struct ConnectionStateMachine {
         case initialized
         case connectMessageSent
         case oobCheckInProgress(fastAuth: Bool, negotiateANO: Bool)
-        case advancedNegotiationSent(fastAuth: Bool)
+        case advancedNegotiationSent
         case protocolMessageSent
         case dataTypesMessageSent
         case waitingToStartAuthentication
@@ -116,7 +116,7 @@ struct ConnectionStateMachine {
         case sendConnect
         case sendOOBCheck
         case sendAdvancedNegotiation
-        case activateNativeNetworkEncryption(AdvancedNegotiation.Response, fastAuth: Bool)
+        case activateNativeNetworkEncryption(AdvancedNegotiation.Response)
         case sendProtocol
         case sendDataTypes
 
@@ -305,7 +305,7 @@ struct ConnectionStateMachine {
             case .initialized,
                 .connectMessageSent,
                 .oobCheckInProgress,
-            .advancedNegotiationSent,
+                .advancedNegotiationSent,
                 .protocolMessageSent,
                 .dataTypesMessageSent,
                 .waitingToStartAuthentication,
@@ -443,15 +443,10 @@ struct ConnectionStateMachine {
         negotiateANO: Bool, fastAuth: Bool
     ) -> ConnectionAction {
         if negotiateANO {
-            self.state = .advancedNegotiationSent(fastAuth: fastAuth)
+            self.state = .advancedNegotiationSent
             return .sendAdvancedNegotiation
         }
-        return self.proceedAfterNegotiation(fastAuth: fastAuth)
-    }
-
-    /// The step after native network encryption (or directly after accept when ANO
-    /// is not negotiated). Fast auth (23ai) skips protocol/datatype negotiation.
-    private mutating func proceedAfterNegotiation(fastAuth: Bool) -> ConnectionAction {
+        // Fast auth (23ai) skips protocol/datatype negotiation.
         if fastAuth {
             self.state = .waitingToStartAuthentication
             return .provideAuthenticationContext(.allowed)
@@ -463,21 +458,20 @@ struct ConnectionStateMachine {
     mutating func advancedNegotiationReceived(
         _ response: AdvancedNegotiation.Response
     ) -> ConnectionAction {
-        guard case .advancedNegotiationSent(let fastAuth) = self.state else {
+        guard case .advancedNegotiationSent = self.state else {
             return self.errorHappened(
                 .unexpectedBackendMessage(.advancedNegotiation(response))
             )
         }
-        return .activateNativeNetworkEncryption(response, fastAuth: fastAuth)
+        return .activateNativeNetworkEncryption(response)
     }
 
     /// Called by the channel handler once the negotiated cipher has been installed.
-    mutating func nativeNetworkEncryptionActivated(fastAuth: Bool) -> ConnectionAction {
+    mutating func nativeNetworkEncryptionActivated() -> ConnectionAction {
         // After native network encryption, always run explicit protocol and datatype
         // negotiation rather than the 23ai fast-auth bundle. The server processes the
         // first encrypted packet as protocol negotiation; fast auth's combined packet
         // is rejected once encryption is active.
-        _ = fastAuth
         self.state = .protocolMessageSent
         return .sendProtocol
     }

@@ -69,13 +69,13 @@ extension OracleBackendMessage {
 
         private static func value(of key: String, in descriptor: String) -> String? {
             let characters = Array(descriptor)
-            let pattern = Array("\(key)=")
+            let pattern = Array("\(key)=").map { Character($0.uppercased()) }
             guard pattern.count <= characters.count else { return nil }
 
             for start in 0...(characters.count - pattern.count) {
                 guard
-                    Array(characters[start..<start + pattern.count]).map({ Character($0.uppercased()) })
-                        == pattern.map({ Character($0.uppercased()) })
+                    characters[start..<start + pattern.count].map({ Character($0.uppercased()) })
+                        == pattern
                 else {
                     continue
                 }

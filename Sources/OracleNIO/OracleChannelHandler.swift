@@ -351,10 +351,8 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             context.writeAndFlush(
                 self.wrapOutboundOut(self.encoder.flush()), promise: nil
             )
-        case .activateNativeNetworkEncryption(let response, let fastAuth):
-            self.activateNativeNetworkEncryption(
-                response, fastAuth: fastAuth, context: context
-            )
+        case .activateNativeNetworkEncryption(let response):
+            self.activateNativeNetworkEncryption(response, context: context)
         case .sendProtocol:
             self.encoder.protocol()
             context.writeAndFlush(
@@ -639,7 +637,6 @@ final class OracleChannelHandler: ChannelDuplexHandler {
 
     private func activateNativeNetworkEncryption(
         _ response: AdvancedNegotiation.Response,
-        fastAuth: Bool,
         context: ChannelHandlerContext
     ) {
         do {
@@ -675,7 +672,7 @@ final class OracleChannelHandler: ChannelDuplexHandler {
                     "checksum_algorithm": "\(response.dataIntegrityAlgorithmID)",
                 ]
             )
-            let action = self.state.nativeNetworkEncryptionActivated(fastAuth: fastAuth)
+            let action = self.state.nativeNetworkEncryptionActivated()
             self.run(action, with: context)
         } catch {
             let action = self.state.errorHappened(
