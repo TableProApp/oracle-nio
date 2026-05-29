@@ -422,9 +422,19 @@ struct OracleNetworkSecurity {
     }
 
     private static func randomBytes(count: Int) -> [UInt8] {
+        // The Diffie-Hellman private key must come from a cryptographically secure
+        // source. `SystemRandomNumberGenerator` is backed by the platform CSPRNG
+        // (getentropy / arc4random), unlike a seeded generator.
+        var generator = SystemRandomNumberGenerator()
         var bytes = [UInt8](repeating: 0, count: count)
-        for index in bytes.indices {
-            bytes[index] = UInt8.random(in: UInt8.min...UInt8.max)
+        var index = 0
+        while index < count {
+            var word = generator.next()
+            for _ in 0..<MemoryLayout<UInt64>.size where index < count {
+                bytes[index] = UInt8(truncatingIfNeeded: word)
+                word >>= 8
+                index += 1
+            }
         }
         return bytes
     }
