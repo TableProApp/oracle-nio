@@ -129,4 +129,38 @@ import Testing
         #expect(state.enqueue(task: .lobOperation(context)) == .sendLOBOperation(context))
         #expect(state.resendReceived() == .sendLOBOperation(context))
     }
+
+    @Test func resetMarkerRealignsNetworkSecurity() {
+        var state = ConnectionStateMachine(.readyForStatement)
+        let promise = EmbeddedEventLoop().makePromise(of: Void.self)
+        promise.fail(OracleSQLError.uncleanShutdown)
+
+        #expect(state.enqueue(task: .ping(promise)) == .sendPing)
+        // The server signals an in-band break with two markers: we reply to the
+        // first and realign the native-encryption keystream on the second (reset).
+        #expect(state.markerReceived() == .sendMarker(read: false))
+        #expect(state.markerReceived() == .resetNetworkSecurity)
+    }
+
+    @Test func errorDuringStatementSurfacesInsteadOfCrashing() {
+        // A pipeline error mid-statement (a failed checksum after an in-band break)
+        // must mark the statement complete so the follow-up readyForStatement does not
+        // trip its precondition. Before the state write-back this readyForStatement
+        // crashed the connection.
+        let promise = EmbeddedEventLoop().makePromise(of: OracleRowStream.self)
+        promise.fail(OracleSQLError.uncleanShutdown)  // we don't care about the error at all.
+        let query: OracleStatement = "SELECT * FROM does_not_exist"
+        let queryContext = StatementContext(statement: query, promise: promise)
+
+        var state = ConnectionStateMachine.readyForStatement()
+        #expect(
+            state.enqueue(task: .statement(queryContext))
+                == .sendExecute(queryContext, nil, cursorID: 0, requiresDefine: false, noPrefetch: false)
+        )
+        #expect(
+            state.errorHappened(.uncleanShutdown)
+                == .failStatement(promise, with: .uncleanShutdown, cleanupContext: nil)
+        )
+        #expect(state.readyForStatementReceived() == .fireEventReadyForStatement)
+    }
 }

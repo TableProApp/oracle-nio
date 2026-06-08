@@ -126,6 +126,68 @@ import Testing
         #expect(recovered == payload)
     }
 
+    @Test func securityKeystreamRealignsAfterReset() throws {
+        // An in-band break resets the connection. Both endpoints re-derive the
+        // checksum keystream in lockstep, so a packet exchanged after the reset still
+        // verifies. Without that realignment the keystreams diverge and validation
+        // fails, which is what crashed connections on the first server error.
+        let response = AdvancedNegotiation.Response(
+            encryptionAlgorithmID: Constants.TNS_ANO_ENC_AES256,
+            dataIntegrityAlgorithmID: Constants.TNS_ANO_DI_SHA256
+        )
+        let sharedKey = (0..<48).map { UInt8($0 & 0xFF) }
+        let iv = (0..<16).map { UInt8((0xF0 + $0) & 0xFF) }
+        func makeSecurity() throws -> OracleNetworkSecurity {
+            try #require(try OracleNetworkSecurity.make(from: response, sharedKey: sharedKey, iv: iv))
+        }
+        let payload = (0..<200).map { UInt8($0 & 0xFF) }
+
+        var local = try makeSecurity()
+        var peer = try makeSecurity()
+        for _ in 0..<3 {
+            _ = try local.unprotect(peer.protectAsPeer(payload))
+        }
+        local.reset()
+        peer.reset()
+        #expect(try local.unprotect(peer.protectAsPeer(payload)) == payload)
+
+        // Resetting only one side desyncs the keystream and fails validation.
+        var localOnly = try makeSecurity()
+        var peerOnly = try makeSecurity()
+        _ = try localOnly.unprotect(peerOnly.protectAsPeer(payload))
+        peerOnly.reset()
+        #expect(throws: AdvancedNegotiation.DecodingError.self) {
+            _ = try localOnly.unprotect(peerOnly.protectAsPeer(payload))
+        }
+    }
+
+    @Test func rc4HashRealignsAfterReset() throws {
+        let sharedKey = (0..<16).map { UInt8($0 & 0xFF) }
+        let iv = (0..<16).map { UInt8((0x20 + $0) & 0xFF) }
+        var peer = OracleNetworkRC4Hash<Insecure.MD5>(key: sharedKey, iv: iv, hashSize: 16)
+        var local = OracleNetworkRC4Hash<Insecure.MD5>(key: sharedKey, iv: iv, hashSize: 16)
+        let payload: [UInt8] = Array("native network encryption".utf8)
+        _ = try local.validate(peer.peerCompute(payload))
+        peer.reinitialize()
+        local.reinitialize()
+        #expect(try local.validate(peer.peerCompute(payload)) == payload)
+    }
+
+    @Test func decryptRejectsMalformedShortPacketWithoutTrapping() throws {
+        // A desynced or truncated post-break packet must throw, never trap on a
+        // negative slice while computing the padding.
+        let cipher = OracleNetworkCBCCipher(
+            key: (0..<32).map { UInt8($0 & 0xFF) },
+            iv: (0..<16).map { UInt8($0 & 0xFF) }
+        )
+        #expect(throws: AdvancedNegotiation.DecodingError.self) {
+            _ = try cipher.decrypt([0x05])
+        }
+        #expect(throws: AdvancedNegotiation.DecodingError.self) {
+            _ = try cipher.decrypt([])
+        }
+    }
+
     private func leftPad(_ bytes: [UInt8], to length: Int) -> [UInt8] {
         guard bytes.count < length else { return Array(bytes.suffix(length)) }
         return [UInt8](repeating: 0, count: length - bytes.count) + bytes

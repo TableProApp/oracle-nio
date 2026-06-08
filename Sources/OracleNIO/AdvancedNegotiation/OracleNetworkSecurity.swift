@@ -66,6 +66,9 @@ struct OracleNetworkCBCCipher {
                 iv: AES._CBC.IV(ivBytes: iv),
                 noPadding: true
             ))
+        guard padding <= plain.count else {
+            throw AdvancedNegotiation.DecodingError(reason: "invalid native encryption padding")
+        }
         return Array(plain[0..<(plain.count - padding)])
     }
 }
@@ -81,6 +84,11 @@ protocol OracleNetworkDataIntegrity {
     /// Strips and verifies the trailing checksum, returning the original payload.
     mutating func validate(_ input: [UInt8]) throws -> [UInt8]
 
+    /// Re-derives the keystream after a connection reset (an in-band break), so both
+    /// endpoints realign. Oracle advances the key generator and rebuilds the per-call
+    /// keystream ciphers; this must run on every reset or all later checksums diverge.
+    mutating func reinitialize()
+
     #if DEBUG
         /// Produces the checksum a peer endpoint appends to a packet this side will
         /// `validate`. The send and receive keystreams are different by design (Oracle
@@ -95,6 +103,7 @@ protocol OracleNetworkDataIntegrity {
 /// five bytes of the shared key, `0xFF`, and the IV. Separate RC4 streams (suffix
 /// 90 for compute, 180 for validate) feed the per-call block.
 struct OracleNetworkRC4Hash<H: HashFunction>: OracleNetworkDataIntegrity {
+    private var keyGen: RC4
     private var encryptor: RC4
     private var decryptor: RC4
     private let hashSize: Int
@@ -104,8 +113,14 @@ struct OracleNetworkRC4Hash<H: HashFunction>: OracleNetworkDataIntegrity {
         var keyGenKey = Array(key.suffix(5))
         keyGenKey.append(0xFF)
         keyGenKey.append(contentsOf: iv)
-        var keyGen = RC4(key: keyGenKey)
-        let derived = keyGen.process([UInt8](repeating: 0, count: 5))
+        self.keyGen = RC4(key: keyGenKey)
+        let derived = self.keyGen.process([UInt8](repeating: 0, count: 5))
+        self.encryptor = RC4(key: derived + [90])
+        self.decryptor = RC4(key: derived + [180])
+    }
+
+    mutating func reinitialize() {
+        let derived = self.keyGen.process([UInt8](repeating: 0, count: 5))
         self.encryptor = RC4(key: derived + [90])
         self.decryptor = RC4(key: derived + [180])
     }
@@ -151,6 +166,8 @@ struct OracleNetworkRC4Hash<H: HashFunction>: OracleNetworkDataIntegrity {
 /// concatenated with the current keystream buffer and appended.
 struct OracleNetworkAESHash<H: HashFunction>: OracleNetworkDataIntegrity {
     private let hashSize: Int
+    private var keyGen: ChainedCBC
+    private var seedBuffer: [UInt8]
     private var encryptor: ChainedCBC
     private var decryptor: ChainedCBC
     private var encryptorBuffer: [UInt8]
@@ -163,20 +180,32 @@ struct OracleNetworkAESHash<H: HashFunction>: OracleNetworkDataIntegrity {
         for index in 0..<min(5, key.count) { aesKey[index] = key[index] }
         aesKey[5] = 0xFF
 
-        // The key generator is itself a stateful CBC cipher seeded with the IV. Its
-        // first 32-byte output yields the base key (first 16) and base IV (next 16).
-        var keyGen = ChainedCBC(key: aesKey, iv: Array(iv.prefix(16)))
-        let seed = keyGen.process([UInt8](repeating: 0, count: 32))
-        var baseKey = Array(seed[0..<16])
-        let baseIV = Array(seed[16..<32])
+        // The key generator is a stateful CBC cipher seeded with the IV. Each
+        // derivation feeds the running 32-byte seed through it to produce the base
+        // key (first 16) and base IV (next 16). A reset re-runs the derivation in
+        // lockstep with the server; the running hash buffers carry over.
+        self.keyGen = ChainedCBC(key: aesKey, iv: Array(iv.prefix(16)))
+        self.seedBuffer = [UInt8](repeating: 0, count: 32)
+        self.encryptor = self.keyGen
+        self.decryptor = self.keyGen
+        self.encryptorBuffer = [UInt8](repeating: 0, count: hashSize)
+        self.decryptorBuffer = [UInt8](repeating: 0, count: hashSize)
+        self.deriveKeystreams()
+    }
 
+    mutating func reinitialize() {
+        self.deriveKeystreams()
+    }
+
+    private mutating func deriveKeystreams() {
+        self.seedBuffer = self.keyGen.process(self.seedBuffer)
+        var baseKey = Array(self.seedBuffer[0..<16])
+        let baseIV = Array(self.seedBuffer[16..<32])
+        self.keyGen = ChainedCBC(key: baseKey, iv: baseIV)
         baseKey[5] = 90
         self.encryptor = ChainedCBC(key: baseKey, iv: baseIV)
         baseKey[5] = 180
         self.decryptor = ChainedCBC(key: baseKey, iv: baseIV)
-
-        self.encryptorBuffer = [UInt8](repeating: 0, count: hashSize)
-        self.decryptorBuffer = [UInt8](repeating: 0, count: hashSize)
     }
 
     mutating func compute(_ input: [UInt8]) -> [UInt8] {
@@ -253,6 +282,13 @@ struct OracleNetworkSecurity {
     @usableFromInline
     var isActive: Bool {
         self.cipher != nil || self.dataIntegrity != nil
+    }
+
+    /// Re-aligns the keyed checksum keystream after an in-band break/reset. The cipher
+    /// keeps its fixed connection IV and needs no reset.
+    @usableFromInline
+    mutating func reset() {
+        self.dataIntegrity?.reinitialize()
     }
 
     @usableFromInline

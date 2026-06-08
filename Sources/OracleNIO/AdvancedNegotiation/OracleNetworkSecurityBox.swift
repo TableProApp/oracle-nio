@@ -47,4 +47,11 @@ final class OracleNetworkSecurityBox {
         self.security = security
         return result
     }
+
+    @usableFromInline
+    func reset() {
+        guard var security = self.security else { return }
+        security.reset()
+        self.security = security
+    }
 }
