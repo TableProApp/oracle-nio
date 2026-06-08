@@ -169,6 +169,9 @@ struct ConnectionStateMachine {
         )
 
         case sendMarker(read: Bool)
+
+        /// Realign the native-encryption keystream after an in-band break/reset.
+        case resetNetworkSecurity
     }
 
     private var state: State
@@ -272,9 +275,11 @@ struct ConnectionStateMachine {
         case .statement(var statement):
             if statement.isComplete {
                 return self.closeConnectionAndCleanup(error)
-            } else {
+            }
+            return self.avoidingStateMachineCoW { machine in
                 let action = statement.errorHappened(error)
-                return self.modify(with: action)
+                machine.state = .statement(statement)
+                return machine.modify(with: action)
             }
         case .readyToLogOff, .loggingOff, .closing:
             // If the state machine is in state `.closing`, the connection
@@ -644,9 +649,11 @@ struct ConnectionStateMachine {
                 return .sendMarker(read: false)
             case .markerSent:
                 // A marker has already been sent, don't send another one,
-                // because this would cancel the current operation.
+                // because this would cancel the current operation. The reset
+                // marker completes the break handshake; both ends now realign
+                // their native-encryption keystreams before the next packet.
                 self.markerState = .noMarkerSent
-                return .wait
+                return .resetNetworkSecurity
             }
         case .loggingOff, .closing:
             return self.errorHappened(.unexpectedBackendMessage(.marker))

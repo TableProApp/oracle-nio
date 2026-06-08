@@ -479,6 +479,9 @@ final class OracleChannelHandler: ChannelDuplexHandler {
                 context.read()
             }
 
+        case .resetNetworkSecurity:
+            self.decoderContext.networkResetAfterBreak()
+
         case .sendPing:
             self.encoder.ping()
             context.writeAndFlush(

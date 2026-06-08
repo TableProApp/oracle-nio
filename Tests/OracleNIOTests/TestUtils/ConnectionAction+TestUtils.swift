@@ -146,6 +146,9 @@ extension ConnectionStateMachine.ConnectionAction: Equatable {
         case (.sendMarker, .sendMarker):
             return true
 
+        case (.resetNetworkSecurity, .resetNetworkSecurity):
+            return true
+
         default:
             return false
         }

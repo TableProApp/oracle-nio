@@ -62,6 +62,10 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
 
         var lobContext: LOBOperationContext?
 
+        /// Set when an in-band break resets the connection: the decoder drops any
+        /// half-read packet before the next read so reassembly starts clean.
+        var pendingBufferReset: Bool = false
+
         @usableFromInline
         init(
             capabilities: Capabilities,
@@ -75,6 +79,13 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
             self.statementContext = nil
             self.bitVector = nil
             self.describeInfo = nil
+        }
+
+        /// Realigns the native-encryption keystream and discards any partial packet
+        /// after an in-band break, so the post-reset packet decodes cleanly.
+        func networkResetAfterBreak() {
+            self.securityBox.reset()
+            self.pendingBufferReset = true
         }
     }
 
@@ -95,6 +106,10 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
     mutating func decode(
         context: ChannelHandlerContext, buffer: inout ByteBuffer
     ) throws -> DecodingState {
+        if self.context.pendingBufferReset {
+            self.partial = nil
+            self.context.pendingBufferReset = false
+        }
         while let (message, needMoreData) = try decodeMessage(from: &buffer) {
             #if DEBUG
                 if sendSingleMessages {
