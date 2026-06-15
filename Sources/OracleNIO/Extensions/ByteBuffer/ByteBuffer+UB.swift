@@ -39,7 +39,7 @@ extension ByteBuffer {
         case 2:
             return self.readInteger(as: UInt16.self)
         default:
-            preconditionFailure()
+            return nil
         }
     }
 
@@ -66,12 +66,12 @@ extension ByteBuffer {
         case 2:
             return self.readInteger(as: UInt16.self).map(UInt32.init(_:))
         case 3:
-            guard let bytes = readBytes(length: Int(length)) else { fatalError() }
+            guard let bytes = readBytes(length: Int(length)) else { return nil }
             return UInt32(bytes[0]) << 16 | UInt32(bytes[1]) << 8 | UInt32(bytes[2])
         case 4:
             return self.readInteger(as: UInt32.self)
         default:
-            preconditionFailure()
+            return nil
         }
     }
 
@@ -105,14 +105,14 @@ extension ByteBuffer {
         case 2:
             return self.readInteger(as: UInt16.self).map(UInt64.init)
         case 3:
-            guard let bytes = readBytes(length: Int(length)) else { fatalError() }
+            guard let bytes = readBytes(length: Int(length)) else { return nil }
             return UInt64(bytes[0]) << 16 | UInt64(bytes[1]) << 8 | UInt64(bytes[2])
         case 4:
             return self.readInteger(as: UInt32.self).map(UInt64.init)
         case 8:
             return self.readInteger(as: UInt64.self)
         default:
-            preconditionFailure()
+            return nil
         }
     }
 
@@ -197,7 +197,7 @@ extension ByteBuffer {
     @inlinable
     mutating func skipUB(_ maxLength: Int) {
         guard let length = readUBLength() else { return }
-        guard length <= maxLength else { preconditionFailure() }
+        guard length <= maxLength, self.readableBytes >= Int(length) else { return }
         self.moveReaderIndex(forwardBy: Int(length))
     }
 
@@ -210,7 +210,11 @@ extension ByteBuffer {
                 file: file, line: line
             )
         }
-        guard length <= maxLength else { preconditionFailure() }
+        guard length <= maxLength else {
+            throw OraclePartialDecodingError.fieldNotDecodable(
+                type: UInt.self, file: file, line: line
+            )
+        }
         try self.throwingMoveReaderIndex(forwardBy: length, file: file, line: line)
     }
 }

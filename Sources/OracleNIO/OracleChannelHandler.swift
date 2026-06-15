@@ -220,16 +220,15 @@ final class OracleChannelHandler: ChannelDuplexHandler {
         case .flushOutBinds:
             action = self.state.flushOutBindsReceived()
 
-        case .serverSidePiggyback(let piggybacks):
-            // This should only happen if one is using `LOB`s.
-            // These are not implemented as of now, so this _should_ never happen.
-            fatalError(
-                """
-                Received server side piggybacks (\(piggybacks)), this is not \
-                implemented and should never happen. Please open an issue here: \
-                https://github.com/lovetodream/oracle-nio/issues with a \
-                reproduction of the crash.
-                """)
+        case .serverSidePiggyback(let piggyback):
+            // Oracle sends server-side piggybacks (sync, sessRet, ltxID, ...) during
+            // normal session setup and teardown to carry session metadata. They are
+            // informational here, so acknowledge and keep waiting for the next message.
+            self.logger.debug(
+                "The oracle server sent a server-side piggyback",
+                metadata: [.piggyback: "\(piggyback)"]
+            )
+            action = .wait
         case .lobData(let lobData):
             action = self.state.lobDataReceived(lobData: lobData)
         case .lobParameter(let parameter):

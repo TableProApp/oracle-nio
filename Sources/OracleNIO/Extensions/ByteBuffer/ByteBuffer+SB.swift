@@ -25,7 +25,7 @@ extension ByteBuffer {
         case 2:
             return readInteger(as: Int16.self)
         default:
-            preconditionFailure()
+            return nil
         }
     }
 
@@ -52,7 +52,7 @@ extension ByteBuffer {
         case 4:
             return readInteger(as: Int32.self)
         default:
-            preconditionFailure()
+            return nil
         }
     }
 
@@ -70,7 +70,7 @@ extension ByteBuffer {
         case 8:
             return readInteger(as: Int64.self)
         default:
-            preconditionFailure()
+            return nil
         }
     }
 
