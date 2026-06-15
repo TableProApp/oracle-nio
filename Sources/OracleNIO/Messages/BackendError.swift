@@ -128,7 +128,9 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
                         try buffer.throwingSkipUB4()  // chunked length ignored
                     }
                     let offset = try buffer.throwingReadUB4()
-                    batch[Int(i)].offset = Int(offset)
+                    if Int(i) < batch.count {
+                        batch[Int(i)].offset = Int(offset)
+                    }
                 }
                 if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
                     try buffer.throwingSkipUB1()  // ignore end marker
@@ -145,7 +147,9 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
                         try buffer
                         .readString()
                         .replacing(/(^\s+|\s+$)/, with: "")
-                    batch[Int(i)].message = errorMessage
+                    if Int(i) < batch.count {
+                        batch[Int(i)].message = errorMessage
+                    }
                     try buffer.throwingMoveReaderIndex(forwardBy: 2)  // ignore end marker
                 }
             }

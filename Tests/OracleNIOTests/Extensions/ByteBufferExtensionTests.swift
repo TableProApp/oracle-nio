@@ -164,4 +164,33 @@ import Testing
             performing: { try buffer.throwingSkipUB4() }
         )
     }
+
+    @Test func readUBReturnsNilOnOutOfRangeOrShortLength() {
+        // Length prefixes the field type cannot represent must yield nil, not trap.
+        var ub2OutOfRange = ByteBuffer(bytes: [3, 0, 0, 0])
+        #expect(ub2OutOfRange.readUB2() == nil)
+        var ub4OutOfRange = ByteBuffer(bytes: [5, 0, 0, 0, 0, 0])
+        #expect(ub4OutOfRange.readUB4() == nil)
+        var ub8OutOfRange = ByteBuffer(bytes: [5, 0, 0, 0, 0, 0])
+        #expect(ub8OutOfRange.readUB8() == nil)
+        // A three-byte length with fewer than three bytes available must yield nil.
+        var ub4Short = ByteBuffer(bytes: [3, 0])
+        #expect(ub4Short.readUB4() == nil)
+    }
+
+    @Test func readSBReturnsNilOnOutOfRangeLength() {
+        var sb2OutOfRange = ByteBuffer(bytes: [3, 0, 0, 0])
+        #expect(sb2OutOfRange.readSB2() == nil)
+        var sb4OutOfRange = ByteBuffer(bytes: [5, 0, 0, 0, 0, 0])
+        #expect(sb4OutOfRange.readSB4() == nil)
+        var sb8OutOfRange = ByteBuffer(bytes: [5, 0, 0, 0, 0, 0])
+        #expect(sb8OutOfRange.readSB8() == nil)
+    }
+
+    @Test func throwingSkipUBThrowsOnOutOfRangeLength() {
+        var buffer = ByteBuffer(bytes: [5, 0, 0, 0, 0])
+        #expect(throws: OraclePartialDecodingError.self) {
+            try buffer.throwingSkipUB4()
+        }
+    }
 }

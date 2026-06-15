@@ -48,9 +48,19 @@ extension OracleBackendMessage {
                     fdoLength, actual: buffer.readableBytes
                 )
             }
-            let ix = 6 + fdo[5] + fdo[6]
+            guard fdo.count > 6 else {
+                throw OraclePartialDecodingError.expectedAtLeastNRemainingBytes(
+                    7, actual: fdo.count
+                )
+            }
+            let ix = 6 + Int(fdo[5]) + Int(fdo[6])
+            guard fdo.count > ix + 4 else {
+                throw OraclePartialDecodingError.expectedAtLeastNRemainingBytes(
+                    ix + 5, actual: fdo.count
+                )
+            }
             capabilities.nCharsetID =
-                UInt16((fdo[Int(ix) + 3] << 8) + fdo[Int(ix) + 4])
+                (UInt16(fdo[ix + 3]) << 8) + UInt16(fdo[ix + 4])
 
             let serverCompileCapabilities = try buffer
                 .throwingReadOracleSpecificLengthPrefixedSlice()
