@@ -201,10 +201,16 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
         if let partial, partial.readableBytes > 0 {
             // insert after flags if packet is data
             let skipSize = type == .data ? MemoryLayout<UInt16>.size : 0
-            let movable = packet.getSlice(
-                at: Self.headerSize + skipSize,
-                length: packet.readableBytes - skipSize
-            )!  // must work
+            guard
+                let movable = packet.getSlice(
+                    at: Self.headerSize + skipSize,
+                    length: packet.readableBytes - skipSize
+                )
+            else {
+                throw OraclePartialDecodingError.expectedAtLeastNRemainingBytes(
+                    Self.headerSize + skipSize, actual: packet.readableBytes
+                )
+            }
             packet.reserveCapacity(minimumWritableBytes: partial.readableBytes)
             packet.writeRepeatingByte(0, count: partial.readableBytes)
             let written = packet.setBuffer(partial, at: Self.headerSize + skipSize)
@@ -226,7 +232,7 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
             return (Container(flags: packetFlags, messages: error.decodedMessages), true)
         } catch let error as OraclePartialDecodingError {
             buffer.moveReaderIndex(to: startReaderIndex)
-            let completeMessage = buffer.readSlice(length: length)!
+            let completeMessage = buffer.readSlice(length: length) ?? buffer.slice()
             throw
                 OracleMessageDecodingError
                 .withPartialError(
@@ -235,9 +241,15 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
                     messageBytes: completeMessage
                 )
         } catch {
-            preconditionFailure(
-                "Expected to only see `OraclePartialDecodingError`s here."
-            )
+            buffer.moveReaderIndex(to: startReaderIndex)
+            let completeMessage = buffer.readSlice(length: length) ?? buffer.slice()
+            throw
+                OracleMessageDecodingError
+                .withPartialError(
+                    OraclePartialDecodingError.fieldNotDecodable(type: Swift.type(of: error)),
+                    packetID: type.rawValue,
+                    messageBytes: completeMessage
+                )
         }
     }
 
