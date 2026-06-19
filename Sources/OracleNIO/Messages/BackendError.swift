@@ -175,7 +175,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
             number: number,
             cursorID: cursorID,
             position: errorPosition,
-            rowCount: numericCast(rowCount),
+            rowCount: Int(exactly: rowCount) ?? Int.max,
             isWarning: false,
             message: errorMessage,
             rowID: rowID,

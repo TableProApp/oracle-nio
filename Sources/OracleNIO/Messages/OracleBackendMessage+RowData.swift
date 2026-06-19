@@ -29,9 +29,7 @@ extension OracleBackendMessage {
             context: OracleBackendMessageDecoder.Context
         ) throws -> RowData {
             guard let statementContext = context.statementContext else {
-                preconditionFailure(
-                    "RowData cannot be received without having a \(String(reflecting: StatementContext.self))"
-                )
+                throw OraclePartialDecodingError.fieldNotDecodable(type: StatementContext.self)
             }
 
             let describeInfo =
@@ -62,11 +60,14 @@ extension OracleBackendMessage {
 
         private static func isDuplicateData(
             columnNumber: UInt32, bitVector: [UInt8]?
-        ) -> Bool {
+        ) throws -> Bool {
             guard let bitVector else { return false }
-            let byteNumber = columnNumber / 8
+            let byteNumber = Int(columnNumber / 8)
             let bitNumber = columnNumber % 8
-            return bitVector[Int(byteNumber)] & (1 << bitNumber) == 0
+            guard byteNumber < bitVector.count else {
+                throw OraclePartialDecodingError.fieldNotDecodable(type: [UInt8].self)
+            }
+            return bitVector[byteNumber] & (1 << bitNumber) == 0
         }
 
         private static func processRowData(
@@ -77,7 +78,7 @@ extension OracleBackendMessage {
             var columns = [ColumnStorage]()
             columns.reserveCapacity(describeInfo.columns.count)
             for (index, column) in describeInfo.columns.enumerated() {
-                if self.isDuplicateData(
+                if try self.isDuplicateData(
                     columnNumber: UInt32(index),
                     bitVector: context.bitVector
                 ) {
@@ -170,7 +171,12 @@ extension OracleBackendMessage {
                 try columnValue.writeLengthPrefixed(as: UInt32.self) { base in
                     let start = base.writerIndex
                     try capabilities.encode(into: &base)
-                    base.writeImmutableBuffer(buffer.readSlice(length: length)!)
+                    guard let cursorSlice = buffer.readSlice(length: length) else {
+                        throw OraclePartialDecodingError.expectedAtLeastNRemainingBytes(
+                            length, actual: buffer.readableBytes
+                        )
+                    }
+                    base.writeImmutableBuffer(cursorSlice)
                     return base.writerIndex - start
                 }
                 columnValue.writeInteger(0, as: UInt32.self)  // chunk length of zero
@@ -259,7 +265,12 @@ extension OracleBackendMessage {
                 let length = (endIndex - startIndex) + (MemoryLayout<UInt32>.size * 2)
                 columnValue.reserveCapacity(minimumWritableBytes: length)
                 try columnValue.writeLengthPrefixed(as: UInt32.self) {
-                    $0.writeImmutableBuffer(buffer.readSlice(length: endIndex - startIndex)!)
+                    guard let namedSlice = buffer.readSlice(length: endIndex - startIndex) else {
+                        throw OraclePartialDecodingError.expectedAtLeastNRemainingBytes(
+                            endIndex - startIndex, actual: buffer.readableBytes
+                        )
+                    }
+                    return $0.writeImmutableBuffer(namedSlice)
                 }
                 columnValue.writeInteger(0, as: UInt32.self)  // chunk length of zero
             default:
@@ -282,7 +293,9 @@ extension OracleBackendMessage {
             capabilities: Capabilities
         ) throws -> [ColumnStorage] {
             let outBinds = statementContext.binds.metadata.compactMap(\.outContainer)
-            guard !outBinds.isEmpty else { preconditionFailure() }
+            guard !outBinds.isEmpty else {
+                throw OraclePartialDecodingError.fieldNotDecodable(type: RowData.self)
+            }
             var columns: [ColumnStorage] = []
             if statementContext.isReturning {
                 for outBind in outBinds {
