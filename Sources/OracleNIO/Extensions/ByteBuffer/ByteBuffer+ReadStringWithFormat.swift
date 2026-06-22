@@ -16,16 +16,20 @@ import struct NIOCore.ByteBuffer
 
 extension ByteBuffer {
     mutating func readString(
-        with charset: Int = Constants.TNS_CS_IMPLICIT
+        with charset: Int = Constants.TNS_CS_IMPLICIT,
+        file: String = #fileID, line: Int = #line
     ) throws -> String {
-        checkPreconditions(charset: charset)
-        var stringSlice = try self.throwingReadOracleSpecificLengthPrefixedSlice()
-        return stringSlice.readString(length: stringSlice.readableBytes)!  // must work
-    }
-
-    private func checkPreconditions(charset: Int) {
         guard charset == Constants.TNS_CS_IMPLICIT else {
-            fatalError("UTF-16 is not supported")
+            throw OraclePartialDecodingError.fieldNotDecodable(
+                type: String.self, file: file, line: line
+            )
         }
+        var stringSlice = try self.throwingReadOracleSpecificLengthPrefixedSlice()
+        guard let string = stringSlice.readString(length: stringSlice.readableBytes) else {
+            throw OraclePartialDecodingError.fieldNotDecodable(
+                type: String.self, file: file, line: line
+            )
+        }
+        return string
     }
 }

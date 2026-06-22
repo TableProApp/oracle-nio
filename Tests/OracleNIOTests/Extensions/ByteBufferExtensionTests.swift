@@ -178,6 +178,21 @@ import Testing
         #expect(ub4Short.readUB4() == nil)
     }
 
+    @Test func readUBDecodesThreeByteValue() {
+        // A three-byte length prefix carries a big-endian 24-bit value.
+        var ub4 = ByteBuffer(bytes: [3, 0x01, 0x02, 0x03])
+        #expect(ub4.readUB4() == 0x01_02_03)
+        var ub8 = ByteBuffer(bytes: [3, 0x0a, 0x0b, 0x0c])
+        #expect(ub8.readUB8() == 0x0a_0b_0c)
+    }
+
+    @Test func readStringThrowsOnUnsupportedCharset() {
+        var buffer = ByteBuffer(bytes: [1, 0x41])
+        #expect(throws: OraclePartialDecodingError.self) {
+            _ = try buffer.readString(with: Constants.TNS_CS_IMPLICIT + 1)
+        }
+    }
+
     @Test func readSBReturnsNilOnOutOfRangeLength() {
         var sb2OutOfRange = ByteBuffer(bytes: [3, 0, 0, 0])
         #expect(sb2OutOfRange.readSB2() == nil)
