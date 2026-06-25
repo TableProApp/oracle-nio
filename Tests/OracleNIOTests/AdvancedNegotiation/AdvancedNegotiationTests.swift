@@ -20,13 +20,27 @@ import Testing
 @Suite struct AdvancedNegotiationTests {
     @Test func encodesRequestWithFourServicesAndMagicHeader() throws {
         var buffer = ByteBuffer()
-        AdvancedNegotiation.encodeRequest(into: &buffer)
+        AdvancedNegotiation.encodeRequest(into: &buffer, includeSecurityServices: true)
 
         #expect(buffer.getInteger(at: 0, as: UInt32.self) == Constants.TNS_ANO_MAGIC)
         // version follows the 2-byte payload length
         #expect(buffer.getInteger(at: 6, as: UInt32.self) == Constants.TNS_ANO_VERSION)
         // service count
         #expect(buffer.getInteger(at: 10, as: UInt16.self) == 4)
+    }
+
+    @Test func omitsSecurityServicesWhenDisabled() throws {
+        var buffer = ByteBuffer()
+        AdvancedNegotiation.encodeRequest(into: &buffer, includeSecurityServices: false)
+
+        #expect(buffer.getInteger(at: 0, as: UInt32.self) == Constants.TNS_ANO_MAGIC)
+        #expect(buffer.getInteger(at: 6, as: UInt32.self) == Constants.TNS_ANO_VERSION)
+        // only supervisor and authentication services are advertised
+        #expect(buffer.getInteger(at: 10, as: UInt16.self) == 2)
+
+        var withServices = ByteBuffer()
+        AdvancedNegotiation.encodeRequest(into: &withServices, includeSecurityServices: true)
+        #expect(buffer.readableBytes < withServices.readableBytes)
     }
 
     @Test func roundTripsServerStyleResponse() throws {

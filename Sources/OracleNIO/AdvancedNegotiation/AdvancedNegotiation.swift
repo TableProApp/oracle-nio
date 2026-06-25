@@ -63,26 +63,33 @@ struct AdvancedNegotiation {
 
     // MARK: - Encoding
 
-    /// Encodes the full ANO request payload (header + four service blocks) into a
-    /// fresh buffer. The caller wraps it in a TTC data packet.
-    static func encodeRequest(into buffer: inout ByteBuffer) {
+    /// Encodes the ANO request payload (header + service blocks) into a fresh buffer.
+    /// The caller wraps it in a TTC data packet.
+    ///
+    /// When `includeSecurityServices` is `false` the client advertises only the
+    /// supervisor and authentication services, so a server that merely accepts
+    /// native encryption negotiates none and the session stays in clear text.
+    static func encodeRequest(into buffer: inout ByteBuffer, includeSecurityServices: Bool) {
         var supervisor = ByteBuffer()
-        encodeSupervisorService(into: &supervisor)
+        encodeSupervisorService(into: &supervisor, includeSecurityServices: includeSecurityServices)
         var auth = ByteBuffer()
         encodeAuthService(into: &auth)
-        var encryption = ByteBuffer()
-        encodeEncryptionService(into: &encryption)
-        var dataIntegrity = ByteBuffer()
-        encodeDataIntegrityService(into: &dataIntegrity)
 
-        let serviceLength =
-            supervisor.readableBytes + auth.readableBytes
-            + encryption.readableBytes + dataIntegrity.readableBytes
-        encodeHeader(into: &buffer, payloadLength: 13 + serviceLength, serviceCount: 4)
-        buffer.writeImmutableBuffer(supervisor)
-        buffer.writeImmutableBuffer(auth)
-        buffer.writeImmutableBuffer(encryption)
-        buffer.writeImmutableBuffer(dataIntegrity)
+        var services = [supervisor, auth]
+        if includeSecurityServices {
+            var encryption = ByteBuffer()
+            encodeEncryptionService(into: &encryption)
+            var dataIntegrity = ByteBuffer()
+            encodeDataIntegrityService(into: &dataIntegrity)
+            services.append(encryption)
+            services.append(dataIntegrity)
+        }
+
+        let serviceLength = services.reduce(0) { $0 + $1.readableBytes }
+        encodeHeader(into: &buffer, payloadLength: 13 + serviceLength, serviceCount: services.count)
+        for service in services {
+            buffer.writeImmutableBuffer(service)
+        }
     }
 
     /// Encodes the follow-up packet that carries the client's Diffie-Hellman public
@@ -116,7 +123,9 @@ struct AdvancedNegotiation {
         buffer.writeInteger(UInt32(0))  // error code
     }
 
-    private static func encodeSupervisorService(into buffer: inout ByteBuffer) {
+    private static func encodeSupervisorService(
+        into buffer: inout ByteBuffer, includeSecurityServices: Bool
+    ) {
         encodeServiceHeader(
             into: &buffer,
             serviceType: Constants.TNS_ANO_SERVICE_SUPERVISOR,
@@ -124,7 +133,11 @@ struct AdvancedNegotiation {
         )
         encodeVersion(into: &buffer)
         encodeBytes(supervisorCID, into: &buffer)
-        encodeUB2Array(supervisorServiceArray, into: &buffer)
+        let services =
+            includeSecurityServices
+            ? supervisorServiceArray
+            : [Constants.TNS_ANO_SERVICE_SUPERVISOR, Constants.TNS_ANO_SERVICE_AUTH]
+        encodeUB2Array(services, into: &buffer)
     }
 
     private static func encodeAuthService(into buffer: inout ByteBuffer) {

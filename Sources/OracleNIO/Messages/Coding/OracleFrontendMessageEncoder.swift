@@ -230,11 +230,13 @@ struct OracleFrontendMessageEncoder {
         self.endRequest()
     }
 
-    mutating func advancedNegotiation() {
+    mutating func advancedNegotiation(includeSecurityServices: Bool) {
         self.clearIfNeeded()
 
         self.startRequest()
-        AdvancedNegotiation.encodeRequest(into: &self.buffer)
+        AdvancedNegotiation.encodeRequest(
+            into: &self.buffer, includeSecurityServices: includeSecurityServices
+        )
         self.endRequest()
     }
 

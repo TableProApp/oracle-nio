@@ -346,7 +346,9 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             self.encoder.marker()
             context.writeAndFlush(self.wrapOutboundOut(self.encoder.flush()), promise: nil)
         case .sendAdvancedNegotiation:
-            self.encoder.advancedNegotiation()
+            self.encoder.advancedNegotiation(
+                includeSecurityServices: self.configuration.nativeNetworkEncryption
+            )
             context.writeAndFlush(
                 self.wrapOutboundOut(self.encoder.flush()), promise: nil
             )
