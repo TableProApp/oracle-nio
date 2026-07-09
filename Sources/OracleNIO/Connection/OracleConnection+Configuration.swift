@@ -194,17 +194,15 @@ extension OracleConnection {
         /// - Note: Windows does not support this functionality at all.
         public var disableOOB: Bool = false
 
-        /// Whether to offer Oracle native network encryption and data-integrity
-        /// checksumming during the connect handshake.
+        /// The client's Oracle native network encryption and data-integrity level for
+        /// the connect handshake.
         ///
-        /// Defaults to `false`, matching Oracle's default client behavior
-        /// (`SQLNET.ENCRYPTION_CLIENT = ACCEPTED`): the client only encrypts when the
-        /// server requires it. Enable this for servers configured with
-        /// `SQLNET.ENCRYPTION_SERVER = REQUIRED`. When `false` the client advertises no
-        /// encryption services, so a server that merely accepts encryption stays in
-        /// clear text. This avoids a stalled handshake on servers whose native
-        /// encryption the driver cannot complete (for example Oracle 11g).
-        public var nativeNetworkEncryption: Bool = false
+        /// Defaults to ``NativeNetworkEncryptionLevel/accepted``, matching Oracle's own
+        /// clients (JDBC thin, SQL Developer): the client offers encryption but does not
+        /// insist on it, so a server that merely accepts encryption stays in clear text
+        /// while a server that requires it negotiates AES. This is what lets the driver
+        /// connect to `SQLNET.ENCRYPTION_SERVER = REQUIRED` servers without extra setup.
+        public var nativeNetworkEncryption: NativeNetworkEncryptionLevel = .accepted
 
         /// A string with the format `host=<host>;port=<port>` that specifies the host and port of
         /// the PL/SQL debugger.

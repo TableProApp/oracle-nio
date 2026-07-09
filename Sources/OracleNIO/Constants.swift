@@ -272,6 +272,10 @@ enum Constants {
     /// accept packet and uses them to gate native network encryption.
     static let TNS_ACCEPT_CONNECT_FLAG_0: UInt8 = 0x01
     static let TNS_ACCEPT_CONNECT_FLAG_1: UInt8 = 0x01
+    /// The "none" algorithm (ID 0). Offering it, and where it sits in the list,
+    /// is how the client signals its encryption level: first for ACCEPTED, last
+    /// for REQUESTED, absent for REQUIRED, alone for REJECTED.
+    static let TNS_ANO_ALGORITHM_NONE = 0
     /// Encryption algorithm IDs.
     static let TNS_ANO_ENC_AES128 = 15
     static let TNS_ANO_ENC_AES192 = 16

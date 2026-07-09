@@ -144,7 +144,7 @@ extension OracleBackendMessage {
                     let response = try AdvancedNegotiation.decodeResponse(from: &buffer)
                     return (.init(element: .advancedNegotiation(response)), true)
                 } catch {
-                    throw OracleSQLError.advancedNegotiationFailed
+                    throw OracleSQLError.advancedNegotiationFailed(underlying: error)
                 }
             }
             try self.decodeData(from: &buffer, into: &messages, context: context)
