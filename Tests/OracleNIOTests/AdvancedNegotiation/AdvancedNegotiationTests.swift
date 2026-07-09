@@ -18,29 +18,25 @@ import Testing
 @testable import OracleNIO
 
 @Suite struct AdvancedNegotiationTests {
-    @Test func encodesRequestWithFourServicesAndMagicHeader() throws {
-        var buffer = ByteBuffer()
-        AdvancedNegotiation.encodeRequest(into: &buffer, includeSecurityServices: true)
+    @Test func encodesAllFourServicesAtEveryLevel() throws {
+        for level: NativeNetworkEncryptionLevel in [.rejected, .accepted, .requested, .required] {
+            var buffer = ByteBuffer()
+            AdvancedNegotiation.encodeRequest(into: &buffer, level: level)
 
-        #expect(buffer.getInteger(at: 0, as: UInt32.self) == Constants.TNS_ANO_MAGIC)
-        // version follows the 2-byte payload length
-        #expect(buffer.getInteger(at: 6, as: UInt32.self) == Constants.TNS_ANO_VERSION)
-        // service count
-        #expect(buffer.getInteger(at: 10, as: UInt16.self) == 4)
+            #expect(buffer.getInteger(at: 0, as: UInt32.self) == Constants.TNS_ANO_MAGIC)
+            // version follows the 2-byte payload length
+            #expect(buffer.getInteger(at: 6, as: UInt32.self) == Constants.TNS_ANO_VERSION)
+            // service count: supervisor, auth, encryption, data integrity
+            #expect(buffer.getInteger(at: 10, as: UInt16.self) == 4)
+        }
     }
 
-    @Test func omitsSecurityServicesWhenDisabled() throws {
-        var buffer = ByteBuffer()
-        AdvancedNegotiation.encodeRequest(into: &buffer, includeSecurityServices: false)
-
-        #expect(buffer.getInteger(at: 0, as: UInt32.self) == Constants.TNS_ANO_MAGIC)
-        #expect(buffer.getInteger(at: 6, as: UInt32.self) == Constants.TNS_ANO_VERSION)
-        // only supervisor and authentication services are advertised
-        #expect(buffer.getInteger(at: 10, as: UInt16.self) == 2)
-
-        var withServices = ByteBuffer()
-        AdvancedNegotiation.encodeRequest(into: &withServices, includeSecurityServices: true)
-        #expect(buffer.readableBytes < withServices.readableBytes)
+    @Test func offersNoneAlgorithmAccordingToLevel() throws {
+        let aes: [UInt8] = [15, 16, 17]
+        #expect(AdvancedNegotiation.offeredAlgorithms(aes, for: .rejected) == [0])
+        #expect(AdvancedNegotiation.offeredAlgorithms(aes, for: .accepted) == [0, 15, 16, 17])
+        #expect(AdvancedNegotiation.offeredAlgorithms(aes, for: .requested) == [15, 16, 17, 0])
+        #expect(AdvancedNegotiation.offeredAlgorithms(aes, for: .required) == [15, 16, 17])
     }
 
     @Test func roundTripsServerStyleResponse() throws {
@@ -62,6 +58,26 @@ import Testing
         #expect(decoded.dhPrime?.count == 32)
         #expect(decoded.dhServerPublicKey?.count == 32)
         #expect(decoded.dhIV?.count == 16)
+    }
+
+    @Test func roundTripsClearTextResponse() throws {
+        var response = ByteBuffer()
+        response.writeInteger(Constants.TNS_ANO_MAGIC)
+        response.writeInteger(UInt16(0))  // payload length, unchecked on read
+        response.writeInteger(Constants.TNS_ANO_VERSION)
+        response.writeInteger(UInt16(4))  // four services
+        response.writeInteger(UInt8(0))  // error flags
+
+        writeSupervisorResponse(into: &response)
+        writeAuthResponse(into: &response)
+        writeEncryptionResponse(into: &response, algorithmID: 0)
+        writeDataIntegrityResponseWithoutKeyExchange(into: &response, algorithmID: 0)
+
+        let decoded = try AdvancedNegotiation.decodeResponse(from: &response)
+        #expect(decoded.encryptionAlgorithmID == 0)
+        #expect(decoded.dataIntegrityAlgorithmID == 0)
+        #expect(decoded.dhPrime == nil)
+        #expect(decoded.dhServerPublicKey == nil)
     }
 
     @Test func rejectsResponseWithBadMagic() throws {
@@ -134,6 +150,14 @@ import Testing
 
     private func writeEncryptionResponse(into buffer: inout ByteBuffer, algorithmID: UInt8) {
         writeServiceHeader(into: &buffer, type: 2, subPackets: 2)
+        writeVersionSubPacket(into: &buffer)
+        writeUB1SubPacket(into: &buffer, value: algorithmID)
+    }
+
+    private func writeDataIntegrityResponseWithoutKeyExchange(
+        into buffer: inout ByteBuffer, algorithmID: UInt8
+    ) {
+        writeServiceHeader(into: &buffer, type: 3, subPackets: 2)
         writeVersionSubPacket(into: &buffer)
         writeUB1SubPacket(into: &buffer, value: algorithmID)
     }

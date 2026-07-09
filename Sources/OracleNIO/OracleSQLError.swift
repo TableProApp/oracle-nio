@@ -446,6 +446,13 @@ public struct OracleSQLError: Sendable, Error {
     }
 
     @inlinable
+    static func advancedNegotiationFailed(underlying: Error) -> OracleSQLError {
+        var error = OracleSQLError(code: .advancedNegotiationFailed)
+        error.underlying = underlying
+        return error
+    }
+
+    @inlinable
     static func failedToAddSSLHandler(underlying: Error) -> OracleSQLError {
         var error = OracleSQLError(code: .failedToAddSSLHandler)
         error.underlying = underlying

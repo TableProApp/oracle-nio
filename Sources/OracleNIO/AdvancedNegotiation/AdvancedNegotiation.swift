@@ -14,6 +14,22 @@
 
 import NIOCore
 
+/// The client's Oracle native network encryption / data-integrity level, matching
+/// `SQLNET.ENCRYPTION_CLIENT`. The level is signalled on the wire by whether the
+/// "none" algorithm (ID 0) is offered and where it sits in the algorithm list.
+public enum NativeNetworkEncryptionLevel: Sendable, Hashable {
+    /// Never encrypt. Offers only the "none" algorithm; fails against a server that
+    /// requires encryption.
+    case rejected
+    /// Offer encryption but do not insist. Stays clear text against an accepting
+    /// server, negotiates AES against a requiring one. Oracle's client default.
+    case accepted
+    /// Prefer encryption but fall back to clear text if the server rejects it.
+    case requested
+    /// Insist on encryption. Fails against a server that rejects it.
+    case required
+}
+
 /// Builds and parses the Advanced Networking Option (native network encryption)
 /// handshake. The wire format mirrors the Oracle JDBC thin driver and go-ora: an
 /// outer `0xDEADBEEF` header followed by typed service blocks for supervisor,
@@ -66,29 +82,41 @@ struct AdvancedNegotiation {
     /// Encodes the ANO request payload (header + service blocks) into a fresh buffer.
     /// The caller wraps it in a TTC data packet.
     ///
-    /// When `includeSecurityServices` is `false` the client advertises only the
-    /// supervisor and authentication services, so a server that merely accepts
-    /// native encryption negotiates none and the session stays in clear text.
-    static func encodeRequest(into buffer: inout ByteBuffer, includeSecurityServices: Bool) {
+    /// Always advertises all four services (supervisor, authentication, encryption,
+    /// data integrity), matching the Oracle JDBC thin driver and go-ora. The `level`
+    /// only changes the offered algorithm list: it decides whether the "none"
+    /// algorithm is offered and where it sits, which is how the client tells the
+    /// server its encryption level (see ``NativeNetworkEncryptionLevel``).
+    static func encodeRequest(into buffer: inout ByteBuffer, level: NativeNetworkEncryptionLevel) {
         var supervisor = ByteBuffer()
-        encodeSupervisorService(into: &supervisor, includeSecurityServices: includeSecurityServices)
+        encodeSupervisorService(into: &supervisor)
         var auth = ByteBuffer()
         encodeAuthService(into: &auth)
+        var encryption = ByteBuffer()
+        encodeEncryptionService(into: &encryption, level: level)
+        var dataIntegrity = ByteBuffer()
+        encodeDataIntegrityService(into: &dataIntegrity, level: level)
 
-        var services = [supervisor, auth]
-        if includeSecurityServices {
-            var encryption = ByteBuffer()
-            encodeEncryptionService(into: &encryption)
-            var dataIntegrity = ByteBuffer()
-            encodeDataIntegrityService(into: &dataIntegrity)
-            services.append(encryption)
-            services.append(dataIntegrity)
-        }
-
+        let services = [supervisor, auth, encryption, dataIntegrity]
         let serviceLength = services.reduce(0) { $0 + $1.readableBytes }
         encodeHeader(into: &buffer, payloadLength: 13 + serviceLength, serviceCount: services.count)
         for service in services {
             buffer.writeImmutableBuffer(service)
+        }
+    }
+
+    /// Applies the level to a base algorithm list by adding the "none" algorithm
+    /// (ID 0): first for ACCEPTED, last for REQUESTED, alone for REJECTED, absent
+    /// for REQUIRED. This is the go-ora wire convention.
+    static func offeredAlgorithms(
+        _ base: [UInt8], for level: NativeNetworkEncryptionLevel
+    ) -> [UInt8] {
+        let none = UInt8(Constants.TNS_ANO_ALGORITHM_NONE)
+        switch level {
+        case .rejected: return [none]
+        case .accepted: return [none] + base
+        case .requested: return base + [none]
+        case .required: return base
         }
     }
 
@@ -123,9 +151,7 @@ struct AdvancedNegotiation {
         buffer.writeInteger(UInt32(0))  // error code
     }
 
-    private static func encodeSupervisorService(
-        into buffer: inout ByteBuffer, includeSecurityServices: Bool
-    ) {
+    private static func encodeSupervisorService(into buffer: inout ByteBuffer) {
         encodeServiceHeader(
             into: &buffer,
             serviceType: Constants.TNS_ANO_SERVICE_SUPERVISOR,
@@ -133,11 +159,7 @@ struct AdvancedNegotiation {
         )
         encodeVersion(into: &buffer)
         encodeBytes(supervisorCID, into: &buffer)
-        let services =
-            includeSecurityServices
-            ? supervisorServiceArray
-            : [Constants.TNS_ANO_SERVICE_SUPERVISOR, Constants.TNS_ANO_SERVICE_AUTH]
-        encodeUB2Array(services, into: &buffer)
+        encodeUB2Array(supervisorServiceArray, into: &buffer)
     }
 
     private static func encodeAuthService(into buffer: inout ByteBuffer) {
@@ -153,25 +175,29 @@ struct AdvancedNegotiation {
         encodeStatus(0xFCFF, into: &buffer)
     }
 
-    private static func encodeEncryptionService(into buffer: inout ByteBuffer) {
+    private static func encodeEncryptionService(
+        into buffer: inout ByteBuffer, level: NativeNetworkEncryptionLevel
+    ) {
         encodeServiceHeader(
             into: &buffer,
             serviceType: Constants.TNS_ANO_SERVICE_ENCRYPTION,
             subPacketCount: 3
         )
         encodeVersion(into: &buffer)
-        encodeBytes(offeredEncryptionAlgorithms, into: &buffer)
+        encodeBytes(offeredAlgorithms(offeredEncryptionAlgorithms, for: level), into: &buffer)
         encodeUB1(1, into: &buffer)  // selected driver
     }
 
-    private static func encodeDataIntegrityService(into buffer: inout ByteBuffer) {
+    private static func encodeDataIntegrityService(
+        into buffer: inout ByteBuffer, level: NativeNetworkEncryptionLevel
+    ) {
         encodeServiceHeader(
             into: &buffer,
             serviceType: Constants.TNS_ANO_SERVICE_DATA_INTEGRITY,
             subPacketCount: 2
         )
         encodeVersion(into: &buffer)
-        encodeBytes(offeredDataIntegrityAlgorithms, into: &buffer)
+        encodeBytes(offeredAlgorithms(offeredDataIntegrityAlgorithms, for: level), into: &buffer)
     }
 
     // MARK: - Typed sub-packet encoders
