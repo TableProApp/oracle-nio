@@ -263,6 +263,11 @@ public final class OracleConnection: Sendable {
         }
     }
 
+    /// Idle time before the first keepalive probe. The system default is two
+    /// hours, which is long enough for a NAT or firewall to drop an idle Oracle
+    /// session first.
+    static let keepaliveIdleSeconds: CInt = 60
+
     static func makeBootstrap(
         on eventLoop: EventLoop,
         configuration: OracleConnection.Configuration
@@ -271,9 +276,21 @@ public final class OracleConnection: Sendable {
             if let tsBootstrap =
                 NIOTSConnectionBootstrap(validatingGroup: eventLoop)
             {
+                // NIOTSConnectionBootstrap already sets TCP_NODELAY on itself.
+                // Keepalive is not set anywhere, so it is applied here to match
+                // the ClientBootstrap path below.
                 return
                     tsBootstrap
                     .connectTimeout(configuration.options.connectTimeout)
+                    .channelOption(
+                        ChannelOptions
+                            .socket(SocketOptionLevel(SOL_SOCKET), SO_KEEPALIVE), value: 1
+                    )
+                    .channelOption(
+                        ChannelOptions
+                            .socket(SocketOptionLevel(IPPROTO_TCP), TCP_KEEPALIVE),
+                        value: keepaliveIdleSeconds
+                    )
             }
         #endif
 
