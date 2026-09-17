@@ -36,13 +36,21 @@ struct Capabilities: Sendable, Hashable {
     /// Whether to run the native network encryption (ANO) handshake after accept.
     ///
     /// The client advertises ANO at the JDBC default "ACCEPTED" level (ACFL0 bit0 in
-    /// the connect packet, never `DISABLE_NA`). The negotiation is then always run:
-    /// a server that requires encryption negotiates AES, and a server with encryption
-    /// off returns algorithm id 0 and the connection proceeds unencrypted. The server
-    /// clears `DISABLE_NA` (ACFL0 bit2) when it understands ANO; some servers do not
-    /// echo the support bit, so we gate only on the no-disable bit.
+    /// the connect packet, never `DISABLE_NA`) and the server answers with its own
+    /// flags. All three conditions are required, matching `go-ora`: the server wants
+    /// the negotiation, has not disabled it for this connection, and offers services
+    /// for it. Sending the negotiation to a server that asked for none leaves the
+    /// login waiting for a reply that never arrives.
     var supportsAdvancedNegotiation: Bool {
-        (acceptFlags0 & 0x04) == 0 && (acceptFlags1 & 0x08) == 0
+        (acceptFlags0 & Constants.TNS_NSI_NA_WANTED) != 0
+            && (acceptFlags0 & Constants.TNS_NSI_DISABLE_NA) == 0
+            && (acceptFlags1 & Constants.TNS_NSI_NA_NO_SERVICES) == 0
+    }
+
+    /// Whether the server said it requires the advanced negotiation. Reported so a
+    /// refused login names its cause instead of failing later at authentication.
+    var requiresAdvancedNegotiation: Bool {
+        (acceptFlags0 & Constants.TNS_NSI_NA_REQUIRED) != 0
     }
 
     // MARK: Compile Capabilities

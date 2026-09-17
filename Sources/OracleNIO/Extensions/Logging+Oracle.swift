@@ -28,6 +28,7 @@ extension OracleSQLConnection {
         case piggyback = "oraclesql_piggyback"
         case message = "oraclesql_message"
         case userEvent = "oraclesql_user_event"
+        case handshakePhase = "oraclesql_handshake_phase"
     }
 }
 

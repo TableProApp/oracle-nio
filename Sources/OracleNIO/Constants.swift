@@ -250,8 +250,17 @@ enum Constants {
     // MARK: Connect flags
     static let TNS_GSO_DONT_CARE: UInt16 = 0x0001
     static let TNS_GSO_CAN_RECV_ATTENTION: UInt16 = 0x0400
+    /// ACFL0 bit 0: the peer wants the Native Authentication (advanced negotiation)
+    /// services. Both endpoints set it when they are willing to negotiate.
+    static let TNS_NSI_NA_WANTED: UInt8 = 0x01
     static let TNS_NSI_DISABLE_NA: UInt8 = 0x04
+    /// ACFL0 bit 4: the peer requires the advanced negotiation. A server setting it
+    /// against a client that skips the negotiation drops the login later and less
+    /// clearly than reporting it here.
+    static let TNS_NSI_NA_REQUIRED: UInt8 = 0x10
     static let TNS_NSI_SUPPORT_SECURITY_RENEG: UInt8 = 0x80
+    /// ACFL1 bit 3: the peer offers no advanced-negotiation services at all.
+    static let TNS_NSI_NA_NO_SERVICES: UInt8 = 0x08
 
     // MARK: Native Network Encryption (Advanced Networking Option)
     static let TNS_ANO_MAGIC: UInt32 = 0xDEAD_BEEF

@@ -50,6 +50,14 @@ extension ConnectionStateMachine.ConnectionAction: Equatable {
             return true
         case (.sendDataTypes, .sendDataTypes):
             return true
+        // Without these the default arm below reported every advanced-negotiation
+        // action as unequal, so no test could assert the negotiation path at all.
+        case (.sendOOBCheck, .sendOOBCheck):
+            return true
+        case (.sendAdvancedNegotiation, .sendAdvancedNegotiation):
+            return true
+        case (.activateNativeNetworkEncryption(let lhs), .activateNativeNetworkEncryption(let rhs)):
+            return lhs == rhs
 
         case (.provideAuthenticationContext, .provideAuthenticationContext):
             return true

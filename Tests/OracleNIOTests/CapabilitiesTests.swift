@@ -18,6 +18,38 @@ import Testing
 @testable import OracleNIO
 
 @Suite(.timeLimit(.minutes(5))) struct CapabilitiesTests {
+    /// The gate `go-ora` applies before it writes the advanced-negotiation packet:
+    /// the server has to want the negotiation, not have disabled it for this
+    /// connection, and offer services for it.
+    @Test(
+        "Advanced negotiation needs all three connect-flag conditions",
+        arguments: [
+            // acfl0, acfl1, expected
+            (UInt8(0x01), UInt8(0x00), true),
+            (UInt8(0x00), UInt8(0x00), false),  // server never asked for it
+            (UInt8(0x05), UInt8(0x00), false),  // wanted, but disabled for this connection
+            (UInt8(0xc5), UInt8(0x00), false),  // a real 11.2 accept that disables it
+            (UInt8(0x01), UInt8(0x08), false),  // wanted, but no services offered
+        ]
+    )
+    func advancedNegotiationGate(acceptFlags0: UInt8, acceptFlags1: UInt8, expected: Bool) {
+        var capabilities = Capabilities()
+        capabilities.adjustForProtocol(
+            version: 314, options: 0, flags: 0,
+            acceptFlags0: acceptFlags0, acceptFlags1: acceptFlags1
+        )
+        #expect(capabilities.supportsAdvancedNegotiation == expected)
+    }
+
+    @Test func requiredAdvancedNegotiationIsReported() {
+        var capabilities = Capabilities()
+        capabilities.adjustForProtocol(
+            version: 314, options: 0, flags: 0, acceptFlags0: 0x10, acceptFlags1: 0
+        )
+        #expect(capabilities.requiresAdvancedNegotiation)
+        #expect(capabilities.supportsAdvancedNegotiation == false)
+    }
+
     @Test func endOfRequestSupport() {
         var capabilities = Capabilities()
         #expect(capabilities.supportsEndOfRequest == false)

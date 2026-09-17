@@ -65,6 +65,36 @@ struct ConnectionStateMachine {
         }
     }
 
+    /// The handshake phase the connection is still in, or `nil` once the login has
+    /// completed or the connection is going away. Used to bound the login handshake and
+    /// to name the phase a stalled login reached.
+    var handshakePhase: String? {
+        switch self.state {
+        case .initialized,
+            .connectMessageSent,
+            .oobCheckInProgress,
+            .advancedNegotiationSent,
+            .protocolMessageSent,
+            .dataTypesMessageSent,
+            .waitingToStartAuthentication,
+            .authenticating,
+            .renegotiatingTLS:
+            return self.state.handshakePhase
+        case .readyForStatement,
+            .statement,
+            .ping,
+            .commit,
+            .rollback,
+            .lobOperation,
+            .readyToLogOff,
+            .loggingOff,
+            .closing,
+            .closed,
+            .modifying:
+            return nil
+        }
+    }
+
     enum QuiescingState {
         case notQuiescing
         case quiescing(closePromise: EventLoopPromise<Void>?)
@@ -80,6 +110,9 @@ struct ConnectionStateMachine {
         struct CleanUpContext {
             enum Action {
                 case close
+                /// Close the channel without the graceful logoff exchange, for a failure
+                /// during the login handshake where there is no session to log off from.
+                case closeImmediately
                 case fireChannelInactive
             }
 
@@ -178,6 +211,7 @@ struct ConnectionStateMachine {
     private var taskQueue = CircularBuffer<OracleTask>()
     private var quiescingState: QuiescingState = .notQuiescing
     private var markerState: MarkerState = .noMarkerSent
+    private var resendCount = 0
 
     init() {
         self.state = .initialized
@@ -423,6 +457,15 @@ struct ConnectionStateMachine {
 
         let capabilities = accept.newCapabilities
 
+        // A server that requires the advanced negotiation but offers us no way to run
+        // it cannot complete a login. Reporting it here names the cause; proceeding
+        // fails later, at authentication, with nothing pointing at the negotiation.
+        if capabilities.requiresAdvancedNegotiation
+            && !capabilities.supportsAdvancedNegotiation
+        {
+            return self.errorHappened(.advancedNegotiationRequired)
+        }
+
         if capabilities.supportsOOB
             && capabilities.supportsOOBCheck
             && capabilities.protocolVersion >= Constants.TNS_VERSION_MIN_OOB_CHECK
@@ -524,7 +567,26 @@ struct ConnectionStateMachine {
         }
     }
 
-    func resendReceived() -> ConnectionAction {
+    /// How many times a peer may ask for the same packet again before the connection
+    /// is given up on. A resend is a bare packet type carrying no payload, so a server
+    /// stuck in a loop, or anything posing as one, would otherwise have the driver
+    /// re-send forever: measured at five identical negotiation packets in two
+    /// milliseconds against a listener that answered nothing else.
+    static let maximumResends = 10
+
+    /// Clears the resend budget once the peer has answered with something other than a
+    /// resend. The limit bounds re-sending one packet, not the lifetime of a connection
+    /// that sees an occasional resend between successful exchanges.
+    mutating func noteForwardProgress() {
+        self.resendCount = 0
+    }
+
+    mutating func resendReceived() -> ConnectionAction {
+        self.resendCount += 1
+        if self.resendCount > Self.maximumResends {
+            return self.errorHappened(.unexpectedBackendMessage(.resend))
+        }
+
         switch self.state {
         case .initialized:
             preconditionFailure(
@@ -620,19 +682,21 @@ struct ConnectionStateMachine {
 
     mutating func markerReceived() -> ConnectionAction {
         switch self.state {
+        // A marker is a packet type, so any server, or anything posing as one, can
+        // send it at any moment. Trapping here killed the whole host process from the
+        // network before the login had even authenticated, so an unexpected marker
+        // closes the connection with an error instead.
         case .initialized,
             .waitingToStartAuthentication,
             .readyForStatement,
             .readyToLogOff,
             .closed,
-            .renegotiatingTLS:
-            preconditionFailure("Invalid state: \(self.state)")
+            .renegotiatingTLS,
+            .advancedNegotiationSent:
+            return self.errorHappened(.unexpectedBackendMessage(.marker))
 
         case .oobCheckInProgress:
             return self.oobCheckComplete()
-
-        case .advancedNegotiationSent:
-            preconditionFailure("Invalid state: \(self.state)")
 
         case .connectMessageSent,
             .protocolMessageSent,
@@ -1154,7 +1218,9 @@ extension ConnectionStateMachine {
             .uncleanShutdown,
             .unsupportedDataType,
             .unsupportedVerifierType,
-            .advancedNegotiationFailed:
+            .advancedNegotiationFailed,
+            .advancedNegotiationRequired,
+            .loginHandshakeTimedOut:
             return true
         case .statementCancelled, .nationalCharsetNotSupported, .missingStatement, .malformedStatement:
             return false
@@ -1182,6 +1248,9 @@ extension ConnectionStateMachine {
     mutating func setErrorAndCreateCleanupContext(
         _ error: OracleSQLError, closePromise: EventLoopPromise<Void>? = nil
     ) -> ConnectionAction.CleanUpContext {
+        // Read before the state is overwritten below: a login that never authenticated
+        // has no session to log off from.
+        let failedDuringHandshake = self.handshakePhase != nil
         let tasks = Array(self.taskQueue)
         self.taskQueue.removeAll()
 
@@ -1202,6 +1271,13 @@ extension ConnectionStateMachine {
         var action = ConnectionAction.CleanUpContext.Action.close
         if case .uncleanShutdown = error.code.base {
             action = .fireChannelInactive
+        } else if failedDuringHandshake {
+            // A logoff is a TTC message for an established session, and a graceful close
+            // waits for the server to answer it. A server that stopped answering mid-login
+            // never will, so the socket outlived the attempt that owned it: one leaked
+            // channel per failed connect.
+            self.state = .closing
+            action = .closeImmediately
         }
 
         return .init(
