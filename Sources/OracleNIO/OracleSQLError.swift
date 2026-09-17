@@ -46,6 +46,8 @@ public struct OracleSQLError: Sendable, Error {
             case missingStatement
             case malformedStatement
             case advancedNegotiationFailed
+            case advancedNegotiationRequired
+            case loginHandshakeTimedOut
             case unsupportedVerifierType(UInt32)
         }
 
@@ -100,6 +102,16 @@ public struct OracleSQLError: Sendable, Error {
         @inlinable
         public static var advancedNegotiationFailed: Self {
             Self(.advancedNegotiationFailed)
+        }
+
+        @inlinable
+        public static var advancedNegotiationRequired: Self {
+            Self(.advancedNegotiationRequired)
+        }
+
+        @inlinable
+        public static var loginHandshakeTimedOut: Self {
+            Self(.loginHandshakeTimedOut)
         }
 
         @inlinable
@@ -173,6 +185,10 @@ public struct OracleSQLError: Sendable, Error {
                 return "uncleanShutdown"
             case .advancedNegotiationFailed:
                 return "advancedNegotiationFailed"
+            case .advancedNegotiationRequired:
+                return "advancedNegotiationRequired"
+            case .loginHandshakeTimedOut:
+                return "loginHandshakeTimedOut"
             case .unexpectedBackendMessage:
                 return "unexpectedBackendMessage"
             case .server:
@@ -449,6 +465,19 @@ public struct OracleSQLError: Sendable, Error {
     static func advancedNegotiationFailed(underlying: Error) -> OracleSQLError {
         var error = OracleSQLError(code: .advancedNegotiationFailed)
         error.underlying = underlying
+        return error
+    }
+
+    static var advancedNegotiationRequired: OracleSQLError {
+        OracleSQLError(code: .advancedNegotiationRequired)
+    }
+
+    /// The server accepted the connection but the login never completed within the
+    /// configured deadline. Carries the handshake phase it stalled in, so the caller
+    /// can say where rather than only that it timed out.
+    static func loginHandshakeTimedOut(phase: String) -> OracleSQLError {
+        var error = OracleSQLError(code: .loginHandshakeTimedOut)
+        error.handshakePhase = phase
         return error
     }
 

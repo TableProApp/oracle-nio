@@ -36,6 +36,7 @@ final class OracleChannelHandler: ChannelDuplexHandler {
     /// For example: More rows needed.
     /// The context is captured in `handlerAdded` and released in `handlerRemoved`.
     private var handlerContext: ChannelHandlerContext?
+    private var loginTimeoutTask: Scheduled<Void>?
     private var rowStream: OracleRowStream?
     private var decoder: ByteToMessageHandler<OracleBackendMessageDecoder>?
     private let decoderContext: OracleBackendMessageDecoder.Context
@@ -111,6 +112,7 @@ final class OracleChannelHandler: ChannelDuplexHandler {
     }
 
     func handlerRemoved(context: ChannelHandlerContext) {
+        self.cancelLoginTimeout()
         self.handlerContext = nil
     }
 
@@ -127,6 +129,7 @@ final class OracleChannelHandler: ChannelDuplexHandler {
 
     func channelInactive(context: ChannelHandlerContext) {
         self.logger.trace("Channel inactive.")
+        self.cancelLoginTimeout()
         let action = self.state.closed()
         self.run(action, with: context)
     }
@@ -169,9 +172,19 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             ])
         let action: ConnectionStateMachine.ConnectionAction
 
+        if case .resend = message {
+        } else {
+            self.state.noteForwardProgress()
+        }
+
         switch message {
         case .accept(let accept):
             self.capabilities = accept.newCapabilities
+            guard self.encryptionPolicyAllows(accept.newCapabilities) else {
+                let action = self.state.errorHappened(.advancedNegotiationRequired)
+                self.run(action, flags: flags, with: context)
+                return
+            }
             action = self.state.acceptReceived(
                 accept, description: configuration.getDescription()
             )
@@ -585,8 +598,37 @@ final class OracleChannelHandler: ChannelDuplexHandler {
     // MARK: - Private Methods -
 
     private func connected(context: ChannelHandlerContext) {
+        self.startLoginTimeout(context: context)
         let action = self.state.connected()
         self.run(action, with: context)
+    }
+
+    /// Bounds the login handshake, which is driven entirely by server replies and so
+    /// has no deadline of its own: a server that accepts the connection and then answers
+    /// nothing leaves the driver waiting for as long as it keeps the socket open.
+    private func startLoginTimeout(context: ChannelHandlerContext) {
+        guard let timeout = self.configuration.options.loginTimeout,
+            self.loginTimeoutTask == nil
+        else { return }
+
+        self.loginTimeoutTask = context.eventLoop.scheduleTask(in: timeout) {
+            self.loginTimeoutTask = nil
+            let phase = self.state.handshakePhase
+            guard let phase else { return }
+            self.logger.debug(
+                "Login handshake timed out.",
+                metadata: [.handshakePhase: "\(phase)"]
+            )
+            let action = self.state.errorHappened(.loginHandshakeTimedOut(phase: phase))
+            self.run(action, with: context)
+        }
+    }
+
+    /// Stops the login deadline once the handshake can no longer stall, so an
+    /// established connection is never torn down by it.
+    private func cancelLoginTimeout() {
+        self.loginTimeoutTask?.cancel()
+        self.loginTimeoutTask = nil
     }
 
     private func sendConnect(
@@ -639,10 +681,29 @@ final class OracleChannelHandler: ChannelDuplexHandler {
         }
     }
 
+    /// `required` is a guarantee, so a server that never offers the negotiation cannot
+    /// satisfy it. Letting the login continue there would authenticate in clear text
+    /// under a setting that promised otherwise.
+    private func encryptionPolicyAllows(_ capabilities: Capabilities) -> Bool {
+        guard self.configuration.nativeNetworkEncryption == .required else { return true }
+        return capabilities.supportsAdvancedNegotiation
+    }
+
     private func activateNativeNetworkEncryption(
         _ response: AdvancedNegotiation.Response,
         context: ChannelHandlerContext
     ) {
+        if self.configuration.nativeNetworkEncryption == .required,
+            response.encryptionAlgorithmID == Constants.TNS_ANO_ALGORITHM_NONE
+        {
+            // The server answered the negotiation by selecting no cipher. Proceeding
+            // would send the credentials in clear text under a setting that requires
+            // encryption, which is how a downgrade goes unnoticed.
+            let action = self.state.errorHappened(.advancedNegotiationRequired)
+            self.run(action, with: context)
+            return
+        }
+
         do {
             // When the server requested Diffie-Hellman key exchange, send the client
             // public key before installing the cipher. The exchange and cipher share
@@ -668,6 +729,17 @@ final class OracleChannelHandler: ChannelDuplexHandler {
                 self.securityBox.security = try OracleNetworkSecurity.make(
                     from: response, sharedKey: exchange.shared, iv: iv
                 )
+            } else if response.encryptionAlgorithmID != Constants.TNS_ANO_ALGORITHM_NONE
+                || response.dataIntegrityAlgorithmID != Constants.TNS_ANO_ALGORITHM_NONE
+            {
+                // The Diffie-Hellman block is the only source of a session key, so a
+                // server that selected an algorithm without sending one leaves nothing
+                // to encrypt or checksum with. Continuing here sent the rest of the
+                // login, credentials included, in clear text to a server expecting it
+                // encrypted.
+                throw AdvancedNegotiation.DecodingError(
+                    reason: "server selected a security algorithm without key exchange material"
+                )
             }
             self.logger.debug(
                 "Native network encryption negotiated",
@@ -680,7 +752,7 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             self.run(action, with: context)
         } catch {
             let action = self.state.errorHappened(
-                .connectionError(underlying: error)
+                .advancedNegotiationFailed(underlying: error)
             )
             self.run(action, with: context)
         }
@@ -723,6 +795,7 @@ final class OracleChannelHandler: ChannelDuplexHandler {
         context: ChannelHandlerContext
     ) {
         // Did finish starting and authenticating
+        self.cancelLoginTimeout()
         let serverContext = self.getServerContext(from: parameters)
         context.fireUserInboundEventTriggered(OracleSQLEvent.startupDone(serverContext))
         context.fireUserInboundEventTriggered(OracleSQLEvent.readyForStatement)
@@ -861,6 +934,8 @@ final class OracleChannelHandler: ChannelDuplexHandler {
         case .close:
             let action = self.state.close(cleanup.closePromise)
             self.run(action, with: context)
+        case .closeImmediately:
+            context.close(mode: .all, promise: cleanup.closePromise)
         case .fireChannelInactive:
             cleanup.closePromise?.succeed()
             context.fireChannelInactive()

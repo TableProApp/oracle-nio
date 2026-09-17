@@ -78,9 +78,55 @@ import Testing
             })
     }
 
+    /// The connect flags sit at packet offset 22 and 23. Reading them from anywhere
+    /// else lands on the reconnect-address length, which decides whether the driver
+    /// runs the advanced negotiation by accident.
+    @Test func decodeAcceptReadsConnectFlagsFromTheirOwnOffset() throws {
+        // Connect flags 0x00/0x00 at 22/23, and 0x04/0x08 eight bytes later where the
+        // reconnect-address length lives. Decoding those instead reads a server that
+        // said nothing as one that disabled the negotiation.
+        let message = try ByteBuffer(
+            bytes: Array(
+                hexString:
+                    "00 20 00 00 02 00 00 00 01 3a 04 01 20 00 20 00 01 00 00 00 00 20 00 00 00 00 00 00 04 08 00 00"
+                    .replacing(" ", with: "")
+            ))
+        var capabilities = Capabilities()
+        capabilities.adjustForProtocol(
+            version: 314, options: 0x0401, flags: 0, acceptFlags0: 0, acceptFlags1: 0
+        )
+        let expected = Message(messages: [.accept(.init(newCapabilities: capabilities))])
+        #expect(
+            throws: Never.self,
+            performing: {
+                try ByteToMessageDecoderVerifier.verifyDecoder(
+                    inputOutputPairs: [(message, [[expected]])]
+                ) {
+                    OracleBackendMessageDecoder()
+                }
+            })
+    }
+
+    /// An accept shorter than the 32 bytes every server sends used to walk the reader
+    /// past the end of the buffer, and that is a precondition failure, so a truncated
+    /// packet killed the host process before the login had authenticated.
+    @Test func decodeShortAcceptThrowsRatherThanTrapping() throws {
+        let message = try ByteBuffer(
+            bytes: Array(
+                hexString: "00 14 00 00 02 00 00 00 01 3a 04 01 20 00 20 00 01 00 00 00"
+                    .replacing(" ", with: "")
+            ))
+        #expect(throws: (any Error).self) {
+            try ByteToMessageDecoderVerifier.verifyDecoder(inputOutputPairs: [(message, [])]) {
+                OracleBackendMessageDecoder()
+            }
+        }
+    }
+
     @Test func decode11gAccept() throws {
         // a real Oracle 11.2 Accept packet: protocol version 314, 24-byte payload
-        // with no SDU or OOB fields (added in 12.1 / 12.2)
+        // with no SDU or OOB fields (added in 12.1 / 12.2). Its ACFL0 is 0xc5, which
+        // has DISABLE_NA set, so the advanced negotiation must not run.
         let message = try ByteBuffer(
             bytes: Array(
                 hexString:
@@ -88,7 +134,10 @@ import Testing
                     .replacing(" ", with: "")
             ))
         var capabilities = Capabilities()
-        capabilities.adjustForProtocol(version: 314, options: 0x0401, flags: 0)
+        capabilities.adjustForProtocol(
+            version: 314, options: 0x0401, flags: 0, acceptFlags0: 0xc5, acceptFlags1: 0
+        )
+        #expect(capabilities.supportsAdvancedNegotiation == false)
         let expected = Message(messages: [.accept(.init(newCapabilities: capabilities))])
         #expect(
             throws: Never.self,

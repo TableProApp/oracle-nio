@@ -73,7 +73,20 @@ extension OracleConnection {
         /// Describes options affecting how the underlying connection is made.
         public struct Options: Sendable {
             /// A timeout for connection attempts. Defaults to ten seconds.
+            ///
+            /// - Note: This bounds the TCP connect alone. Everything after it, the TNS
+            ///         accept, the advanced negotiation, protocol and datatype
+            ///         negotiation and authentication, is bounded by ``loginTimeout``.
             public var connectTimeout: TimeAmount
+
+            /// A timeout for the login handshake, measured from the moment the channel
+            /// becomes active until authentication completes. Defaults to thirty seconds.
+            ///
+            /// Without it a server that accepts the connection and then answers nothing
+            /// leaves the login waiting for as long as the server keeps the socket open,
+            /// because the handshake is driven by replies rather than by polling. Set it
+            /// to `nil` to wait indefinitely.
+            public var loginTimeout: TimeAmount?
 
             /// The server name to use for certificate validation and SNI (Server Name Indication) when
             /// TLS is enabled.
@@ -92,6 +105,7 @@ extension OracleConnection {
             /// Most users should not need to adjust the defaults.
             public init() {
                 self.connectTimeout = .seconds(10)
+                self.loginTimeout = .seconds(30)
             }
         }
 
@@ -409,9 +423,11 @@ extension OracleConnection {
             _ redirect: OracleRedirectError
         ) -> OracleConnection.Configuration? {
             guard case .connectTCP = self.endpointInfo else { return nil }
-            guard let target = OracleBackendMessage.Redirect(
-                address: redirect.address, connectData: redirect.connectData
-            ).target else { return nil }
+            guard
+                let target = OracleBackendMessage.Redirect(
+                    address: redirect.address, connectData: redirect.connectData
+                ).target
+            else { return nil }
             guard target.host != self.host || target.port != self.port else { return nil }
 
             var copy = self

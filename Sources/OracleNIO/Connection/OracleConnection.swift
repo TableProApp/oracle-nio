@@ -198,11 +198,13 @@ public final class OracleConnection: Sendable {
 
         return eventHandler.startupDoneFuture
             .flatMapError { error in
-                // in case of a startup error, the connection must be closed and
-                // after that the originating error should be surfaced
-                channel.closeFuture.flatMapThrowing { _ in
-                    throw error
-                }
+                // In case of a startup error the connection must be closed, but the
+                // originating error is surfaced without waiting for the close to
+                // complete. Chaining `closeFuture` here held the caller until the
+                // SERVER hung up, so a login the driver had already given up on still
+                // presented as a timeout minutes later.
+                channel.close(mode: .all, promise: nil)
+                return channel.eventLoop.makeFailedFuture(error)
             }
             .map { context in
                 OracleConnection(
