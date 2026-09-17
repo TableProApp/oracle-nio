@@ -160,6 +160,7 @@ public final class OracleConnection: Sendable {
         }
 
         let securityBox = OracleNetworkSecurityBox()
+        let redactionBox = OracleTraceRedactionBox()
         let frontendMessageHandler = OracleFrontendMessagePostProcessor(
             securityBox: securityBox
         )
@@ -168,7 +169,8 @@ public final class OracleConnection: Sendable {
             logger: logger,
             sslHandler: sslHandler,
             postprocessor: frontendMessageHandler,
-            securityBox: securityBox
+            securityBox: securityBox,
+            redactionBox: redactionBox
         )
 
         let eventHandler = OracleEventsHandler(logger: logger)
@@ -176,15 +178,25 @@ public final class OracleConnection: Sendable {
         // 2. add handlers
 
         do {
+            // A hex dump of the handshake is the only thing that diagnoses a login that
+            // stalls against a server nobody here can reach, so it has to be reachable
+            // from a shipped build. ORANIO_TRACE_PACKETS alone turns it on, and the
+            // tracer stops dumping bodies once authentication begins. A debug build can
+            // ask for the credentials too with =2, which a shipped binary cannot.
             #if DEBUG
-                // This is very useful for sending hex dumps to Oracle to analyze
-                // problems in the driver.
-                let tracer = OracleTraceHandler(
-                    connectionID: connectionID,
-                    logger: Logger(label: "oracle-nio.network-tracing")
-                )
-                try channel.pipeline.syncOperations.addHandler(tracer)
+                let dumpsCredentials =
+                    (getenv("ORANIO_TRACE_PACKETS").flatMap { String(cString: $0) }
+                        .flatMap(Int.init) ?? 0) >= 2
+            #else
+                let dumpsCredentials = false
             #endif
+            let tracer = OracleTraceHandler(
+                connectionID: connectionID,
+                logger: Logger(label: "oracle-nio.network-tracing"),
+                redactionBox: redactionBox,
+                dumpsCredentials: dumpsCredentials
+            )
+            try channel.pipeline.syncOperations.addHandler(tracer)
             try channel.pipeline.syncOperations.addHandler(eventHandler)
             try channel.pipeline.syncOperations
                 .addHandler(channelHandler, position: .before(eventHandler))
@@ -414,12 +426,12 @@ extension OracleConnection: OracleConnectionProtocol {
         while attempts > 0 {
             attempts -= 1
             do {
-                return try await self.connect(
+                return try await self.connectFollowingRedirects(
                     on: eventLoop,
                     configuration: configuration,
                     id: connectionID,
                     logger: logger
-                ).get()
+                )
             } catch let error as CancellationError {
                 throw error
             } catch {
@@ -429,12 +441,71 @@ extension OracleConnection: OracleConnectionProtocol {
                 try await Task.sleep(for: .seconds(configuration.retryDelay))
             }
         }
-        return try await self.connect(
+        return try await self.connectFollowingRedirects(
             on: eventLoop,
             configuration: configuration,
             id: connectionID,
             logger: logger
-        ).get()
+        )
+    }
+
+    /// How many times a listener may hand the client on before the attempt is given up.
+    /// A server can redirect to itself and two can redirect to each other, and neither
+    /// is caught by refusing a repeat of the immediately preceding address.
+    static let maximumRedirects = 5
+
+    /// Follows a TNS redirect, which a RAC SCAN listener, a shared server dispatcher or
+    /// a load-balancing broker sends on an ordinary connect. Each hop is a fresh
+    /// connection to the address the listener named, carrying the connect descriptor it
+    /// sent back rather than the one built from this configuration.
+    ///
+    /// The login deadline bounds the whole chain rather than each hop, so five hops
+    /// cannot outlive a caller that allowed one login timeout.
+    private static func connectFollowingRedirects(
+        on eventLoop: EventLoop,
+        configuration: OracleConnection.Configuration,
+        id connectionID: ID,
+        logger: Logger
+    ) async throws -> OracleConnection {
+        var configuration = configuration
+        let deadline = configuration.options.loginTimeout.map { NIODeadline.now() + $0 }
+        var lastRedirect: OracleRedirectError?
+
+        for _ in 0...Self.maximumRedirects {
+            if let deadline {
+                let remaining = deadline - .now()
+                guard remaining.nanoseconds > 0 else {
+                    throw OracleSQLError.loginHandshakeTimedOut(phase: "connect")
+                }
+                configuration.options.loginTimeout = remaining
+                configuration.options.connectTimeout = min(
+                    configuration.options.connectTimeout, remaining
+                )
+            }
+            do {
+                return try await self.connect(
+                    on: eventLoop,
+                    configuration: configuration,
+                    id: connectionID,
+                    logger: logger
+                ).get()
+            } catch let error as OracleSQLError {
+                guard
+                    let redirect = error.underlying as? OracleRedirectError,
+                    let next = configuration.followingRedirect(redirect)
+                else { throw error }
+                logger.debug(
+                    "Following a listener redirect",
+                    metadata: [.connectionID: "\(connectionID)"]
+                )
+                lastRedirect = redirect
+                configuration = next
+            }
+        }
+
+        throw OracleSQLError.tooManyRedirects(
+            underlying: lastRedirect ?? OracleRedirectError(address: "", connectData: nil)
+        )
     }
 
     /// Closes the connection to the database server.

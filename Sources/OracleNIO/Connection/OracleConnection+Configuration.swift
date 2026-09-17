@@ -406,7 +406,14 @@ extension OracleConnection {
             return desc
         }
 
+        /// The connect string a redirecting listener handed back. A redirect target is
+        /// not merely an address: the listener replaces the whole descriptor, and
+        /// python-oracledb sends it back verbatim. Rebuilding our own from `host` and
+        /// `port` is what makes shared server and MTS a coin flip.
+        internal var redirectConnectString: String?
+
         internal func getConnectString() -> String {
+            if let redirectConnectString { return redirectConnectString }
             let description = self.getDescription()
             let cid = """
                 (PROGRAM=\(self.programName))\
@@ -417,21 +424,26 @@ extension OracleConnection {
         }
 
         /// Returns a copy of this configuration pointed at the address from a TNS redirect,
-        /// or `nil` when the redirect cannot be followed (no parseable target, an
-        /// externally supplied channel, or a redirect back to the current address).
+        /// or `nil` when the redirect cannot be followed: an externally supplied channel,
+        /// no parseable target, or a target whose transport disagrees with ours.
+        ///
+        /// A `PROTOCOL=tcps` redirect on a plain-TCP configuration is refused rather than
+        /// followed, because following it would connect in clear text to an endpoint that
+        /// asked for TLS; the reverse is refused because it would fail with nothing
+        /// pointing at the cause.
         internal func followingRedirect(
             _ redirect: OracleRedirectError
         ) -> OracleConnection.Configuration? {
             guard case .connectTCP = self.endpointInfo else { return nil }
-            guard
-                let target = OracleBackendMessage.Redirect(
-                    address: redirect.address, connectData: redirect.connectData
-                ).target
-            else { return nil }
-            guard target.host != self.host || target.port != self.port else { return nil }
+            let message = OracleBackendMessage.Redirect(
+                address: redirect.address, connectData: redirect.connectData
+            )
+            guard let target = message.target else { return nil }
+            guard message.usesTCPS == (self._protocol == .tcps) else { return nil }
 
             var copy = self
             copy.endpointInfo = .connectTCP(host: target.host, port: target.port)
+            copy.redirectConnectString = redirect.connectData
             return copy
         }
     }

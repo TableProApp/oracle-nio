@@ -62,6 +62,63 @@ import Testing
         }
     }
 
+    /// Everything after the authentication exchange begins is a credential, so the
+    /// trace keeps the header and drops the body. The password verifier, the session
+    /// key and a bearer token all ride in those bodies.
+    @Test func redactsBodiesOnceAuthenticationBegins() async throws {
+        let lines: NIOLockedValueBox<[String]> = .init([])
+        let logger = Logger(label: "Tracer") { _ in Handler(lines: lines) }
+        let box = OracleTraceRedactionBox()
+        let handler = OracleTraceHandler(
+            connectionID: 1, logger: logger, shouldLog: true, redactionBox: box
+        )
+        let channel = await NIOAsyncTestingChannel(handler: handler)
+        try await channel.connect(to: .makeAddressResolvingHost("127.0.0.1", port: 1521))
+
+        let secret = Array("hunter2-password-verifier".utf8)
+        var buffer = ByteBuffer()
+        buffer.writeInteger(UInt32(8 + secret.count))
+        buffer.writeInteger(UInt8(6))
+        buffer.writeInteger(UInt8(0))
+        buffer.writeInteger(UInt16(0))
+        buffer.writeBytes(secret)
+
+        box.redactFromNowOn()
+        try await channel.writeOutbound(buffer)
+
+        let logged = try #require(lines.withLockedValue { $0 }.last)
+        #expect(logged.contains("redacted past authentication"))
+        #expect(logged.contains("body \(secret.count) bytes"))
+        #expect(!logged.contains("hunter2"))
+        #expect(!logged.contains("68 75 6E"))
+    }
+
+    @Test func dumpsEverythingBeforeAuthentication() async throws {
+        let lines: NIOLockedValueBox<[String]> = .init([])
+        let logger = Logger(label: "Tracer") { _ in Handler(lines: lines) }
+        let handler = OracleTraceHandler(
+            connectionID: 1, logger: logger, shouldLog: true,
+            redactionBox: OracleTraceRedactionBox()
+        )
+        let channel = await NIOAsyncTestingChannel(handler: handler)
+        try await channel.connect(to: .makeAddressResolvingHost("127.0.0.1", port: 1521))
+        try await channel.writeOutbound(ByteBuffer(bytes: Array(repeating: UInt8(0xAB), count: 12)))
+
+        let logged = try #require(lines.withLockedValue { $0 }.last)
+        #expect(logged.contains("AB AB"))
+        #expect(!logged.contains("redacted"))
+    }
+
+    /// The flag never clears, so one authentication packet redacts the rest of the
+    /// connection rather than only the packet that set it.
+    @Test func redactionIsPermanentForTheConnection() {
+        let box = OracleTraceRedactionBox()
+        #expect(box.isRedacted == false)
+        box.redactFromNowOn()
+        box.redactFromNowOn()
+        #expect(box.isRedacted)
+    }
+
     final class Handler: LogHandler, @unchecked Sendable {
         var metadata: Logger.Metadata = [:]
         var logLevel: Logger.Level = .trace

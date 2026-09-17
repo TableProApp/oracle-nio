@@ -107,6 +107,52 @@ import Testing
             })
     }
 
+    /// Below protocol 315 the negotiated size lives only in the 16-bit pair at packet
+    /// offset 12 and 14. Keeping the client's own proposal instead meant sending
+    /// packets larger than the server agreed to.
+    @Test(
+        "Legacy accept adopts the server's negotiated SDU",
+        arguments: [
+            // sdu, tdu, expected
+            (UInt16(8192), UInt16(8192), UInt32(8192)),
+            (UInt16(2048), UInt16(8192), UInt32(2048)),  // server tuned it down
+            (UInt16(8192), UInt16(1024), UInt32(1024)),  // transport unit is the floor
+            (UInt16(16), UInt16(16), UInt32(8192)),  // below Oracle's 512 floor, not believed
+            (UInt16(0), UInt16(0), UInt32(8192)),  // absent, keep the client's proposal
+        ]
+    )
+    func legacyAcceptAdoptsNegotiatedSDU(sdu: UInt16, tdu: UInt16, expected: UInt32) throws {
+        var packet = ByteBuffer()
+        packet.writeInteger(UInt16(32))
+        packet.writeInteger(UInt16(0))
+        packet.writeInteger(UInt8(2))
+        packet.writeBytes([0, 0, 0])
+        packet.writeInteger(UInt16(314))
+        packet.writeInteger(UInt16(0x0401))
+        packet.writeInteger(sdu)
+        packet.writeInteger(tdu)
+        packet.writeBytes(Array(repeating: UInt8(0), count: 6))
+        packet.writeInteger(UInt8(0x01))
+        packet.writeInteger(UInt8(0))
+        packet.writeBytes(Array(repeating: UInt8(0), count: 8))
+
+        var capabilities = Capabilities()
+        capabilities.sdu = expected
+        capabilities.adjustForProtocol(
+            version: 314, options: 0x0401, flags: 0, acceptFlags0: 0x01, acceptFlags1: 0
+        )
+        let message = Message(messages: [.accept(.init(newCapabilities: capabilities))])
+        #expect(
+            throws: Never.self,
+            performing: {
+                try ByteToMessageDecoderVerifier.verifyDecoder(
+                    inputOutputPairs: [(packet, [[message]])]
+                ) {
+                    OracleBackendMessageDecoder()
+                }
+            })
+    }
+
     /// An accept shorter than the 32 bytes every server sends used to walk the reader
     /// past the end of the buffer, and that is a precondition failure, so a truncated
     /// packet killed the host process before the login had authenticated.

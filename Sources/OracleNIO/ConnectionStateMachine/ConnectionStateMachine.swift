@@ -1220,7 +1220,8 @@ extension ConnectionStateMachine {
             .unsupportedVerifierType,
             .advancedNegotiationFailed,
             .advancedNegotiationRequired,
-            .loginHandshakeTimedOut:
+            .loginHandshakeTimedOut,
+            .tooManyRedirects:
             return true
         case .statementCancelled, .nationalCharsetNotSupported, .missingStatement, .malformedStatement:
             return false

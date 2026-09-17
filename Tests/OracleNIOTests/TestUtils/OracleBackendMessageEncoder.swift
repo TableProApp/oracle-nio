@@ -113,11 +113,14 @@ extension OracleBackendMessage.Accept: OracleMessagePayloadEncodable {
     func encode(into buffer: inout ByteBuffer) {
         buffer.writeInteger(self.newCapabilities.protocolVersion, as: UInt16.self)
         buffer.writeInteger(self.newCapabilities.protocolOptions, as: UInt16.self)
-        // SDU, TDU, hardware marker, accept-data length and accept-data offset, which
-        // the decoder skips. The connect flags then sit at packet offset 22 and 23,
-        // which is 10 and 11 bytes into this chunk. Filling the whole chunk with zeroes
-        // is what let the round trip pass while the decoder read them 8 bytes late.
-        buffer.writeBytes(Array(repeating: UInt8(0), count: 10))
+        // This chunk covers packet offsets 12 through 31: the 16-bit SDU and TDU, the
+        // hardware marker, the accept-data length and offset, then the connect flags at
+        // 22 and 23. Filling all of it with zeroes is what let the round trip pass while
+        // the decoder read the flags 8 bytes late and ignored the legacy SDU entirely.
+        let legacySDU = UInt16(clamping: self.newCapabilities.sdu)
+        buffer.writeInteger(legacySDU, as: UInt16.self)
+        buffer.writeInteger(legacySDU, as: UInt16.self)
+        buffer.writeBytes(Array(repeating: UInt8(0), count: 6))
         buffer.writeInteger(self.newCapabilities.acceptFlags0, as: UInt8.self)
         buffer.writeInteger(self.newCapabilities.acceptFlags1, as: UInt8.self)
         buffer.writeBytes(Array(repeating: UInt8(0), count: 8))

@@ -46,6 +46,7 @@ final class OracleChannelHandler: ChannelDuplexHandler {
 
     private let postprocessor: OracleFrontendMessagePostProcessor
     private let securityBox: OracleNetworkSecurityBox
+    private let redactionBox: OracleTraceRedactionBox
     private var capabilities: Capabilities {
         didSet {
             self.decoderContext.capabilities = self.capabilities
@@ -63,7 +64,8 @@ final class OracleChannelHandler: ChannelDuplexHandler {
         logger: Logger,
         sslHandler: NIOSSLClientHandler?,
         postprocessor: OracleFrontendMessagePostProcessor,
-        securityBox: OracleNetworkSecurityBox = OracleNetworkSecurityBox()
+        securityBox: OracleNetworkSecurityBox = OracleNetworkSecurityBox(),
+        redactionBox: OracleTraceRedactionBox = OracleTraceRedactionBox()
     ) {
         self.state = ConnectionStateMachine()
         self.configuration = configuration
@@ -71,6 +73,7 @@ final class OracleChannelHandler: ChannelDuplexHandler {
         self.currentSSLHandler = sslHandler
         self.postprocessor = postprocessor
         self.securityBox = securityBox
+        self.redactionBox = redactionBox
 
         var capabilities = Capabilities()
         #if os(Windows)
@@ -398,15 +401,20 @@ final class OracleChannelHandler: ChannelDuplexHandler {
                 .provideAuthenticationContext(authContext, fastAuth: fastAuth)
             return self.run(action, with: context)
         case .sendFastAuth(let authContext):
+            // Everything from here on carries the password verifier, the session key or
+            // a bearer token, so a packet trace stops dumping bodies at this line.
+            self.redactionBox.redactFromNowOn()
             self.encoder.fastAuth(authContext: authContext)
             context.writeAndFlush(
                 self.wrapOutboundOut(self.encoder.flush()), promise: nil
             )
         case .sendAuthenticationPhaseOne(let authContext):
+            self.redactionBox.redactFromNowOn()
             self.sendAuthenticationPhaseOne(
                 authContext: authContext, context: context
             )
         case .sendAuthenticationPhaseTwo(let authContext, let parameters):
+            self.redactionBox.redactFromNowOn()
             self.sendAuthenticationPhaseTwo(
                 authContext: authContext,
                 parameters: parameters,

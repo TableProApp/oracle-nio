@@ -56,13 +56,44 @@ import Testing
         #expect(redirected.service == config.service)
     }
 
-    @Test func followingRedirectToSameAddressReturnsNil() {
+    /// A listener may legally redirect to its own address to hand back a replacement
+    /// connect descriptor, so the same address is followed. Refusing it was never a loop
+    /// bound either: two servers pointing at each other never repeat consecutively. The
+    /// hop limit in `connectFollowingRedirects` is what bounds the chain.
+    @Test func followingRedirectToSameAddressIsAllowed() throws {
         let config = makeConfig(host: "db.example.com", port: 1521)
         let redirect = OracleRedirectError(
             address: "(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=db.example.com)(PORT=1521)))",
+            connectData: "(DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=handed_back)))"
+        )
+        let redirected = try #require(config.followingRedirect(redirect))
+        #expect(redirected.host == "db.example.com")
+        #expect(redirected.port == 1521)
+    }
+
+    /// The listener replaces the whole descriptor, so the follow-up connect sends what
+    /// it handed back rather than one rebuilt from this configuration. Rebuilding it is
+    /// what makes shared server and MTS a coin flip.
+    @Test func followingRedirectSendsTheServersConnectString() throws {
+        let config = makeConfig()
+        let handedBack = "(DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=shared)(SERVER=dedicated)))"
+        let redirect = OracleRedirectError(
+            address: "(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=node1.example.com)(PORT=1522)))",
+            connectData: handedBack
+        )
+        let redirected = try #require(config.followingRedirect(redirect))
+        #expect(redirected.getConnectString() == handedBack)
+        #expect(config.getConnectString() != handedBack)
+    }
+
+    /// Following a `PROTOCOL=tcps` redirect from a plain-TCP configuration would connect
+    /// in clear text to an endpoint that asked for TLS.
+    @Test func followingRedirectRefusesATransportMismatch() {
+        let config = makeConfig()
+        let redirect = OracleRedirectError(
+            address: "(DESCRIPTION=(ADDRESS=(PROTOCOL=tcps)(HOST=node1.example.com)(PORT=2484)))",
             connectData: nil
         )
-        // Refusing a redirect back to the current address prevents an infinite loop.
         #expect(config.followingRedirect(redirect) == nil)
     }
 

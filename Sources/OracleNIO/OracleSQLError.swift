@@ -48,6 +48,7 @@ public struct OracleSQLError: Sendable, Error {
             case advancedNegotiationFailed
             case advancedNegotiationRequired
             case loginHandshakeTimedOut
+            case tooManyRedirects
             case unsupportedVerifierType(UInt32)
         }
 
@@ -112,6 +113,11 @@ public struct OracleSQLError: Sendable, Error {
         @inlinable
         public static var loginHandshakeTimedOut: Self {
             Self(.loginHandshakeTimedOut)
+        }
+
+        @inlinable
+        public static var tooManyRedirects: Self {
+            Self(.tooManyRedirects)
         }
 
         @inlinable
@@ -189,6 +195,8 @@ public struct OracleSQLError: Sendable, Error {
                 return "advancedNegotiationRequired"
             case .loginHandshakeTimedOut:
                 return "loginHandshakeTimedOut"
+            case .tooManyRedirects:
+                return "tooManyRedirects"
             case .unexpectedBackendMessage:
                 return "unexpectedBackendMessage"
             case .server:
@@ -475,6 +483,14 @@ public struct OracleSQLError: Sendable, Error {
     /// The server accepted the connection but the login never completed within the
     /// configured deadline. Carries the handshake phase it stalled in, so the caller
     /// can say where rather than only that it timed out.
+    /// A listener redirect chain that never settled. Carries the last target so the
+    /// message can name where the client gave up.
+    static func tooManyRedirects(underlying: Error) -> OracleSQLError {
+        var error = OracleSQLError(code: .tooManyRedirects)
+        error.underlying = underlying
+        return error
+    }
+
     static func loginHandshakeTimedOut(phase: String) -> OracleSQLError {
         var error = OracleSQLError(code: .loginHandshakeTimedOut)
         error.handshakePhase = phase

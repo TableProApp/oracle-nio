@@ -16,9 +16,17 @@ import NIOCore
 
 /// Carries a TNS redirect target up the connection startup so the connect routine can
 /// open a fresh connection to the address the listener handed back.
-struct OracleRedirectError: Error, Equatable, Sendable {
-    var address: String
-    var connectData: String?
+public struct OracleRedirectError: Error, Equatable, Sendable, CustomStringConvertible {
+    public var address: String
+    public var connectData: String?
+
+    public var description: String {
+        let target = OracleBackendMessage.Redirect(address: self.address, connectData: self.connectData).target
+        guard let target else {
+            return "the listener redirected to an address the driver could not parse"
+        }
+        return "the listener redirected to \(target.host):\(target.port)"
+    }
 }
 
 extension OracleBackendMessage {
