@@ -31,90 +31,98 @@ extension OracleBackendMessage {
             case ltxID = 7
             case acReplayContext = 8
             case extSync = 9
+            case sessionSignature = 10
         }
 
+        /// Every count and length in a piggyback is a variable-length UB integer, a length byte followed by that
+        /// many bytes, and every value is a length-prefixed byte string. Read as fixed-width integers instead, the
+        /// `sync` piggyback Oracle 23ai sends after `ALTER SESSION` claimed 274 elements where it carried 18, so the
+        /// decoder waited for bytes the server never sent and the connection hung.
         static func decode(
             from buffer: inout ByteBuffer,
             context: OracleBackendMessageDecoder.Context
         ) throws -> OracleBackendMessage.ServerSidePiggyback {
-            let opCode = Code(rawValue: try buffer.throwingReadInteger())
-            var temp16: UInt16 = 0
+            let rawOpCode = try buffer.throwingReadInteger(as: UInt8.self)
+            guard let opCode = Code(rawValue: rawOpCode) else {
+                throw OraclePartialDecodingError.unknownServerSidePiggyback(opCode: rawOpCode)
+            }
             switch opCode {
             case .ltxID:
-                let numberOfBytes = try buffer.throwingReadInteger(
-                    as: UInt32.self
-                )
-                if numberOfBytes > 0 {
-                    try buffer.throwingMoveReaderIndex(forwardBy: Int(numberOfBytes))
-                }
-            case .queryCacheInvalidation, .traceEvent, .none:
+                try buffer.throwingSkipBytesWithLength()
+            case .queryCacheInvalidation, .traceEvent:
                 break
             case .osPidMts:
-                temp16 = buffer.readInteger(as: UInt16.self) ?? 0
-                buffer.skipRawBytesChunked()
+                try buffer.throwingSkipUB2()
+                try buffer.throwingSkipBytes()
             case .sync:
-                try buffer.throwingMoveReaderIndex(forwardBy: 2)  // skip number of DTYs
-                try buffer.throwingMoveReaderIndex(forwardBy: 1)  // skip length of DTYs
-                let numberOfElements = try buffer.throwingReadInteger(
-                    as: UInt16.self
-                )
-                try buffer.throwingMoveReaderIndex(forwardBy: 1)  // skip length
+                try buffer.throwingSkipUB2()  // number of DTYs
+                try buffer.throwingSkipUB1()  // length of DTYs
+                let numberOfElements = try buffer.throwingReadUB2()
+                try buffer.throwingSkipUB1()  // length
                 for _ in 0..<numberOfElements {
-                    temp16 = try buffer.throwingReadInteger(as: UInt16.self)
-                    if temp16 > 0 {  // skip key
-                        buffer.skipRawBytesChunked()
-                    }
-                    temp16 = try buffer.throwingReadInteger(as: UInt16.self)
-                    if temp16 > 0 {  // skip value
-                        buffer.skipRawBytesChunked()
-                    }
-                    try buffer.throwingMoveReaderIndex(forwardBy: 2)  // skip flags
+                    try buffer.throwingSkipKeywordValuePair()
                 }
-                try buffer.throwingMoveReaderIndex(forwardBy: 4)  // skip overall flags
+                try buffer.throwingSkipUB4()  // overall flags
             case .extSync:
-                try buffer.throwingMoveReaderIndex(forwardBy: 2)  // skip number of DTYs
-                try buffer.throwingMoveReaderIndex(forwardBy: 1)  // skip length of DTYs
+                try buffer.throwingSkipUB2()  // number of DTYs
+                try buffer.throwingSkipUB1()  // length of DTYs
             case .acReplayContext:
-                try buffer.throwingMoveReaderIndex(forwardBy: 2)  // skip number of DTYs
-                try buffer.throwingMoveReaderIndex(forwardBy: 1)  // skip length of DTYs
-                try buffer.throwingMoveReaderIndex(forwardBy: 4)  // skip flags
-                try buffer.throwingMoveReaderIndex(forwardBy: 4)  // skip error code
-                try buffer.throwingMoveReaderIndex(forwardBy: 1)  // skip queue
-                let numberOfBytes = try buffer.throwingReadInteger(
-                    as: UInt32.self
-                )  // skip replay context
-                if numberOfBytes > 0 {
-                    try buffer.throwingMoveReaderIndex(forwardBy: Int(numberOfBytes))
-                }
+                try buffer.throwingSkipUB2()  // number of DTYs
+                try buffer.throwingSkipUB1()  // length of DTYs
+                try buffer.throwingSkipUB4()  // flags
+                try buffer.throwingSkipUB4()  // error code
+                try buffer.throwingSkipUB1()  // queue
+                try buffer.throwingSkipBytesWithLength()  // replay context
             case .sessRet:
-                try buffer.throwingMoveReaderIndex(forwardBy: 2)
-                try buffer.throwingMoveReaderIndex(forwardBy: 1)
-                let numberOfElements = try buffer.throwingReadInteger(
-                    as: UInt16.self
-                )
+                try buffer.throwingSkipUB2()  // number of DTYs
+                try buffer.throwingSkipUB1()  // length of DTYs
+                let numberOfElements = try buffer.throwingReadUB2()
                 if numberOfElements > 0 {
-                    try buffer.throwingMoveReaderIndex(forwardBy: 1)
+                    try buffer.throwingSkipUB1()  // length
                     for _ in 0..<numberOfElements {
-                        temp16 = try buffer.throwingReadInteger(as: UInt16.self)
-                        if temp16 > 0 {  // skip key
-                            buffer.skipRawBytesChunked()
-                        }
-                        temp16 = try buffer.throwingReadInteger(as: UInt16.self)
-                        if temp16 > 0 {  // skip value
-                            buffer.skipRawBytesChunked()
-                        }
-                        try buffer.throwingMoveReaderIndex(forwardBy: 2)  // skip flags
+                        try buffer.throwingSkipKeywordValuePair()
                     }
                 }
-                let flags = try buffer.throwingReadInteger(as: UInt32.self)
-                // session flags
+                let flags = try buffer.throwingReadUB4()  // session flags
                 let resetStatementCache = flags & Constants.TNS_SESSGET_SESSION_CHANGED != 0
-                try buffer.throwingMoveReaderIndex(forwardBy: 4)
-                try buffer.throwingMoveReaderIndex(forwardBy: 2)
+                try buffer.throwingSkipUB4()  // session id
+                try buffer.throwingSkipUB2()  // serial number
                 return .init(resetStatementCache: resetStatementCache)
+            case .sessionSignature:
+                try buffer.throwingSkipUB2()  // number of DTYs
+                try buffer.throwingSkipUB1()  // length of DTYs
+                try buffer.throwingSkipUB8()  // signature flags
+                try buffer.throwingSkipUB8()  // client signature
+                try buffer.throwingSkipUB8()  // server signature
             }
 
             return .init(resetStatementCache: false)
+        }
+    }
+}
+
+extension ByteBuffer {
+    /// Skips one keyword/value pair of a piggyback: a text value, a binary value and a trailing number, each
+    /// announced by a UB2 length, and each value length-prefixed.
+    fileprivate mutating func throwingSkipKeywordValuePair() throws {
+        if try self.throwingReadUB2() > 0 {
+            try self.throwingSkipBytes()
+        }
+        if try self.throwingReadUB2() > 0 {
+            try self.throwingSkipBytes()
+        }
+        try self.throwingSkipUB2()
+    }
+
+    /// Skips a length-prefixed byte string, chunked or not.
+    fileprivate mutating func throwingSkipBytes() throws {
+        _ = try self.throwingReadOracleSpecificLengthPrefixedSlice()
+    }
+
+    /// Skips a byte string preceded by a UB4 length, which is zero when the string is absent.
+    fileprivate mutating func throwingSkipBytesWithLength() throws {
+        if try self.throwingReadUB4() > 0 {
+            try self.throwingSkipBytes()
         }
     }
 }
