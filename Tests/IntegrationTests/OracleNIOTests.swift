@@ -891,6 +891,92 @@ final class OracleNIOTests {
         #expect(received == 50)
     }
 
+    /// A REF CURSOR starts with its describe info already known, so an error on its first fetch
+    /// arrives before any row header and used to end the process on a nil row stream.
+    @Test func cursorFailingBeforeItsFirstRowThrows() async throws {
+        let conn = try await OracleConnection.test(on: eventLoop)
+        defer { #expect(throws: Never.self, performing: { try conn.syncClose() }) }
+
+        let cursorRef = OracleRef(dataType: .cursor)
+        try await conn.execute("BEGIN OPEN \(cursorRef) FOR SELECT 1/0 FROM dual; END;")
+        let cursor = try cursorRef.decode(as: Cursor.self)
+        do {
+            for try await _ in try await cursor.execute(on: conn) {}
+            Issue.record("Expected the first fetch to fail")
+        } catch {
+            #expect((error as? OracleSQLError)?.serverInfo?.number == 1476)
+        }
+        #expect(try await self.answer(on: conn) == [42])
+    }
+
+    /// Every failed statement used to leave its server cursor open. Once the session ran out of
+    /// them (open_cursors, 300 by default) every statement failed with ORA-01000 at cursor 0,
+    /// which was reported as an empty success.
+    @Test func failedStatementsDoNotExhaustTheSessionCursors() async throws {
+        let conn = try await OracleConnection.test(on: eventLoop)
+        defer { #expect(throws: Never.self, performing: { try conn.syncClose() }) }
+
+        for _ in 0..<320 {
+            await #expect(throws: OracleSQLError.self) {
+                try await conn.execute("SELECT 1/0 FROM dual")
+            }
+        }
+        #expect(try await self.answer(on: conn) == [42])
+    }
+
+    @Test func integrityErrorsDoNotExhaustTheSessionCursors() async throws {
+        let conn = try await OracleConnection.test(on: eventLoop)
+        defer { #expect(throws: Never.self, performing: { try conn.syncClose() }) }
+        _ = try? await conn.execute("DROP TABLE integrity_cursor_test")
+        try await conn.execute("CREATE TABLE integrity_cursor_test (id NUMBER PRIMARY KEY)")
+        try await conn.execute("INSERT INTO integrity_cursor_test VALUES (1)")
+
+        for _ in 0..<320 {
+            await #expect(throws: OracleSQLError.self) {
+                try await conn.execute("INSERT INTO integrity_cursor_test VALUES (1)")
+            }
+        }
+        #expect(try await self.answer(on: conn) == [42])
+        try await conn.execute("DROP TABLE integrity_cursor_test")
+    }
+
+    /// Oracle 23ai answers ALTER SESSION with a `sync` piggyback. Decoded with fixed-width
+    /// integers it claimed more elements than it carried, and the connection waited forever.
+    @Test func alterSessionReturns() async throws {
+        let conn = try await OracleConnection.test(on: eventLoop)
+        defer { #expect(throws: Never.self, performing: { try conn.syncClose() }) }
+
+        try await conn.execute("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD'")
+        try await conn.execute("ALTER SESSION SET CURRENT_SCHEMA = \(unescaped: env("ORA_USERNAME") ?? "my_user")")
+        #expect(try await self.answer(on: conn) == [42])
+    }
+
+    @Test func breakingOutOfAStreamLeavesTheConnectionUsable() async throws {
+        let conn = try await OracleConnection.test(on: eventLoop)
+        defer { #expect(throws: Never.self, performing: { try conn.syncClose() }) }
+
+        for _ in 0..<40 {
+            try await self.readFirstRows(5, of: "SELECT level FROM dual CONNECT BY level <= 1000", on: conn)
+        }
+        #expect(try await self.answer(on: conn) == [42])
+    }
+
+    private func answer(on conn: OracleConnection) async throws -> [Int] {
+        var answers: [Int] = []
+        for try await answer in try await conn.execute("SELECT 42 FROM dual").decode(Int.self) {
+            answers.append(answer)
+        }
+        return answers
+    }
+
+    private func readFirstRows(_ count: Int, of sql: OracleStatement, on conn: OracleConnection) async throws {
+        var seen = 0
+        for try await _ in try await conn.execute(sql) {
+            seen += 1
+            if seen == count { break }
+        }
+    }
+
     @Test func rowID() async throws {
         let conn = try await OracleConnection.test(on: self.eventLoop)
         defer { #expect(throws: Never.self, performing: { try conn.syncClose() }) }

@@ -92,13 +92,15 @@ struct RowStreamStateMachine {
         }
     }
 
-    mutating func receivedDuplicate(at index: Int) -> ByteBuffer {
+    /// Returns the column a duplicate marker refers to, taken from the previous row, or `nil` when the server
+    /// marked a column as a duplicate before sending any row it could duplicate.
+    mutating func receivedDuplicate(at index: Int) -> ByteBuffer? {
         switch self.state {
         case .waitingForRows(let buffer):
             guard
                 let previousRow = buffer.last ?? self.lastRowFromPreviousBuffer
             else {
-                preconditionFailure()
+                return nil
             }
             let idx = previousRow.index(previousRow.startIndex, offsetBy: index)
             // return empty buffer if duplicate is nil
@@ -118,7 +120,7 @@ struct RowStreamStateMachine {
             guard
                 let previousRow = buffer.last ?? self.lastRowFromPreviousBuffer
             else {
-                preconditionFailure()
+                return nil
             }
             let index = previousRow.index(DataRow.ColumnIndex(0), offsetBy: index)
             // return empty buffer if duplicate is nil
@@ -259,8 +261,11 @@ struct RowStreamStateMachine {
             return .wait
 
         case .waitingForDemand:
+            // A read event arrived while the consumer had not asked for rows,
+            // and it was held back. Nobody will ask for rows now, so the read
+            // is passed on, or the connection never reads another reply.
             self.state = .failed
-            return .wait
+            return .read
 
         case .failed:
             // Once the row stream state machine is marked as failed, no further

@@ -28,8 +28,10 @@ struct StatementStateMachine {
             RowStreamStateMachine
         )
         /// Indicates that the current statement was cancelled and we want to drain
-        /// rows from the connection ASAP.
-        case drain([DescribeInfo.Column])
+        /// rows from the connection ASAP. Carries the cursor the server named for the
+        /// statement once a reply has named one, so it can be closed when the
+        /// cancellation completes.
+        case drain(cursorID: UInt16?)
 
         case commandComplete
         case error(OracleSQLError)
@@ -43,7 +45,9 @@ struct StatementStateMachine {
         case sendFetch(StatementContext, cursorID: UInt16?)
         case sendFlushOutBinds
 
-        case failStatement(EventLoopPromise<OracleRowStream>, with: OracleSQLError)
+        /// Fails a statement whose promise is still pending, with an optional cursor ID the server opened for it,
+        /// which should be closed in a future roundtrip.
+        case failStatement(EventLoopPromise<OracleRowStream>, with: OracleSQLError, cursorID: UInt16? = nil)
         case succeedStatement(EventLoopPromise<OracleRowStream>, StatementResult)
 
         case evaluateErrorAtConnectionLevel(OracleSQLError)
@@ -57,7 +61,9 @@ struct StatementStateMachine {
             cursorID: UInt16? = nil,
             clientCancelled: Bool = false
         )
-        case forwardCancelComplete
+        /// The server answered the client's cancellation, with the cursor the cancelled statement held open,
+        /// which should be closed in a future roundtrip.
+        case forwardCancelComplete(cursorID: UInt16?)
 
         case read
         case wait
@@ -114,10 +120,10 @@ struct StatementStateMachine {
                 return .failStatement(promise, with: .statementCancelled)
             }
 
-        case .streaming(_, let describeInfo, _, var streamStateMachine):
+        case .streaming(_, _, _, var streamStateMachine):
             precondition(!self.isCancelled)
             self.isCancelled = true
-            self.state = .drain(describeInfo.columns)
+            self.state = .drain(cursorID: nil)
             switch streamStateMachine.fail() {
             case .wait:
                 return .forwardStreamError(
@@ -139,15 +145,25 @@ struct StatementStateMachine {
     }
 
     mutating func describeInfoReceived(_ describeInfo: DescribeInfo) -> Action {
-        guard case .initialized(let context) = state else {
-            preconditionFailure("Describe info should be the initial response")
-        }
+        switch self.state {
+        case .initialized(let context):
+            self.avoidingStateMachineCoWVoid { state in
+                state = .describeInfoReceived(context, describeInfo)
+            }
+            return .wait
 
-        self.avoidingStateMachineCoWVoid { state in
-            state = .describeInfoReceived(context, describeInfo)
-        }
+        case .drain:
+            // This state might occur, if the client cancelled the statement,
+            // but the server did not yet receive/process the cancellation
+            // marker. Due to that it might send more data without knowing yet.
+            return .wait
 
-        return .wait
+        case .rowCountsReceived, .describeInfoReceived, .streaming, .commandComplete, .error:
+            return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.describeInfo(describeInfo)))
+
+        case .modifying:
+            preconditionFailure("Invalid state: \(self.state)")
+        }
     }
 
     mutating func rowHeaderReceived(
@@ -196,7 +212,7 @@ struct StatementStateMachine {
             return .wait
 
         case .initialized, .rowCountsReceived, .error, .commandComplete:
-            preconditionFailure("Invalid state: \(self.state)")
+            return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.rowHeader(rowHeader)))
 
         case .modifying:
             preconditionFailure("Invalid state: \(self.state)")
@@ -210,13 +226,15 @@ struct StatementStateMachine {
         switch self.state {
         case .initialized(let context):
             let outBinds = context.binds.metadata.compactMap(\.outContainer)
-            precondition(rowData.columns.count == outBinds.count)
+            guard rowData.columns.count == outBinds.count else {
+                return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.rowData(rowData)))
+            }
             for (index, column) in rowData.columns.enumerated() {
                 switch column {
                 case .data(let buffer):
                     outBinds[index].storage.withLockedValue { $0 = buffer }
                 case .duplicate:
-                    preconditionFailure("duplicate columns cannot happen in out binds")
+                    return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.rowData(rowData)))
                 }
             }
             return .wait
@@ -228,7 +246,9 @@ struct StatementStateMachine {
                 case .data(var buffer):
                     out.writeBuffer(&buffer)
                 case .duplicate(let index):
-                    var data = demandStateMachine.receivedDuplicate(at: index)
+                    guard var data = demandStateMachine.receivedDuplicate(at: index) else {
+                        return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.rowData(rowData)))
+                    }
                     if data.readableBytes <= Constants.TNS_MAX_SHORT_LENGTH {
                         try! out.writeLengthPrefixed(as: UInt8.self) { buffer in
                             buffer.writeBuffer(&data)
@@ -262,7 +282,10 @@ struct StatementStateMachine {
             // marker. Due to that it might send more data without knowing yet.
             return .wait
 
-        default:
+        case .rowCountsReceived, .describeInfoReceived, .commandComplete, .error:
+            return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.rowData(rowData)))
+
+        case .modifying:
             preconditionFailure("Invalid state: \(self.state)")
         }
     }
@@ -288,7 +311,10 @@ struct StatementStateMachine {
             // marker. Due to that it might send more data without knowing yet.
             return .wait
 
-        default:
+        case .initialized, .rowCountsReceived, .describeInfoReceived, .commandComplete, .error:
+            return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.bitVector(bitVector)))
+
+        case .modifying:
             preconditionFailure("Invalid state: \(self.state)")
         }
     }
@@ -296,7 +322,7 @@ struct StatementStateMachine {
     mutating func queryParameterReceived(_ parameter: OracleBackendMessage.QueryParameter) -> Action {
         if let rowCounts = parameter.rowCounts {
             guard case .initialized(let statementContext) = state else {
-                preconditionFailure("Invalid state: \(self.state)")
+                return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.queryParameter(parameter)))
             }
             self.state = .modifying
             self.state = .rowCountsReceived(statementContext, rowCounts.map(Int.init))
@@ -307,6 +333,15 @@ struct StatementStateMachine {
     mutating func errorReceived(
         _ error: BackendError
     ) -> Action {
+        switch self.state {
+        case .drain(let cursorID):
+            return self.cancelledStatementReceived(error, cursorID: cursorID)
+        case .commandComplete, .error:
+            return self.endedStatementReceived(error)
+        case .initialized, .rowCountsReceived, .describeInfoReceived, .streaming, .modifying:
+            break
+        }
+
         let batchErrors = error.batchErrors.map(OracleSQLError.BatchError.init)
 
         let action: Action
@@ -384,60 +419,9 @@ struct StatementStateMachine {
             }
         } else if self.isCancelled && error.number == 1013 {
             self.state = .commandComplete
-            action = .forwardCancelComplete
-        } else if error.number == Constants.TNS_ERR_VAR_NOT_IN_SELECT_LIST,
-            let cursor = error.cursorID
-        {
-            switch self.state {
-            case .initialized(let context):
-                switch context.type {
-                case .query(let promise),
-                    .plsql(let promise),
-                    .dml(let promise),
-                    .ddl(let promise),
-                    .cursor(_, _, let promise),
-                    .plain(let promise):
-                    action = .failStatement(promise, with: .server(error))
-                }
-            default:
-                action = .forwardStreamError(
-                    .server(error), read: false, cursorID: cursor
-                )
-            }
-
-            self.avoidingStateMachineCoWVoid { state in
-                state = .error(.server(error))
-            }
-        } else if let cursor = error.cursorID,
-            error.number != 0 && cursor != 0
-        {
-            let exception = getExceptionClass(for: Int32(error.number))
-            switch self.state {
-            case .initialized(let context):
-                switch context.type {
-                case .query(let promise),
-                    .plsql(let promise),
-                    .dml(let promise),
-                    .ddl(let promise),
-                    .cursor(_, _, let promise),
-                    .plain(let promise):
-                    action = .failStatement(promise, with: .server(error))
-                }
-            default:
-                if exception != .integrityError {
-                    action = .forwardStreamError(
-                        .server(error), read: false, cursorID: cursor
-                    )
-                } else {
-                    action = .forwardStreamError(
-                        .server(error), read: false, cursorID: nil
-                    )
-                }
-            }
-
-            self.avoidingStateMachineCoWVoid { state in
-                state = .error(.server(error))
-            }
+            action = .forwardCancelComplete(cursorID: error.cursorID)
+        } else if error.number != 0 {
+            action = self.setAndFireError(.server(error), closingCursor: error.cursorID)
         } else {
             switch self.state {
             case .drain:
@@ -542,20 +526,6 @@ struct StatementStateMachine {
                         )
                     }
 
-                } else if error.number != 0 {
-                    switch context.type {
-                    case .query(let promise),
-                        .plsql(let promise),
-                        .dml(let promise),
-                        .ddl(let promise),
-                        .cursor(_, _, let promise),
-                        .plain(let promise):
-                        action = .failStatement(promise, with: .server(error))
-                    }
-
-                    self.avoidingStateMachineCoWVoid { state in
-                        state = .error(.server(error))
-                    }
                 } else {
                     action = .sendFetch(context, cursorID: error.cursorID)
                 }
@@ -576,17 +546,47 @@ struct StatementStateMachine {
         return self.setAndFireError(error)
     }
 
+    /// Answers a reply that reaches a statement the client already cancelled. The fetch the client sent before it
+    /// cancelled is still answered first, with rows, the end of the data or an error of its own, and only then
+    /// does ORA-01013 answer the cancellation (measured on Oracle 23ai). The consumer already has its
+    /// cancellation error, so none of these reach it. The statement keeps draining until the ORA-01013 arrives,
+    /// and closes the cursor the fetch reply named, since the ORA-01013 itself names cursor 0.
+    private mutating func cancelledStatementReceived(
+        _ error: BackendError,
+        cursorID: UInt16?
+    ) -> Action {
+        let cursorID = error.cursorID.flatMap { $0 == 0 ? nil : $0 } ?? cursorID
+        guard error.number == 1013 else {
+            self.state = .drain(cursorID: cursorID)
+            return .wait
+        }
+        self.state = .commandComplete
+        return .forwardCancelComplete(cursorID: cursorID)
+    }
+
+    /// Answers a reply that reaches a statement which already ended. Only the ORA-01013 answering a cancellation
+    /// and the end of data a fetch in flight still reports can arrive here; anything else is a server out of step
+    /// with the statement, so the connection is closed rather than read further.
+    private mutating func endedStatementReceived(_ error: BackendError) -> Action {
+        if self.isCancelled && error.number == 1013 {
+            self.state = .commandComplete
+            return .forwardCancelComplete(cursorID: error.cursorID)
+        }
+        if Constants.TNS_ERR_NO_DATA_FOUND == error.number
+            || Constants.TNS_ERR_ARRAY_DML_ERRORS == error.number
+        {
+            return .wait
+        }
+        return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.error(error)))
+    }
+
     mutating func ioVectorReceived(
         _ vector: OracleBackendMessage.InOutVector
     ) -> Action {
         switch self.state {
         case .initialized(let context):
             guard context.binds.count == vector.bindMetadata.count else {
-                preconditionFailure(
-                    """
-                    mismatch in binds - sent: \(context.binds.count), \
-                    received: \(vector.bindMetadata.count)
-                    """)
+                return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.ioVector(vector)))
             }
 
             // we won't change the state
@@ -598,9 +598,7 @@ struct StatementStateMachine {
             .drain,
             .commandComplete,
             .error:
-            return self.errorHappened(
-                .unexpectedBackendMessage(.ioVector(vector))
-            )
+            return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.ioVector(vector)))
 
         case .modifying:
             preconditionFailure("Invalid state: \(self.state)")
@@ -622,9 +620,7 @@ struct StatementStateMachine {
             .drain,
             .commandComplete,
             .error:
-            return self.errorHappened(
-                .unexpectedBackendMessage(.flushOutBinds)
-            )
+            return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.flushOutBinds))
 
         case .modifying:
             preconditionFailure("Invalid state: \(self.state)")
@@ -760,7 +756,18 @@ struct StatementStateMachine {
 
     // MARK: Private Methods
 
-    private mutating func setAndFireError(_ error: OracleSQLError) -> Action {
+    /// Ends the statement with `error` through the channel its consumer is still listening on. The promise is only
+    /// succeeded when the first row header arrives, so until the statement streams nobody holds a row stream and the
+    /// promise is what fails: that covers a cursor returned by PL/SQL, which starts with its describe info already
+    /// known, and a query whose describe info arrived before the error.
+    ///
+    /// `cursorID` names a cursor the server opened for the statement, which the next round trip closes. There is no
+    /// statement cache to execute it again, so a cursor left open here stays open for the life of the session.
+    private mutating func setAndFireError(
+        _ error: OracleSQLError,
+        closingCursor cursorID: UInt16? = nil
+    ) -> Action {
+        let cursorToClose = cursorID == 0 ? nil : cursorID
         switch self.state {
         case .initialized(let context),
             .rowCountsReceived(let context, _),
@@ -776,7 +783,7 @@ struct StatementStateMachine {
                     .cursor(_, _, let promise),
                     .plain(let promise):
                     self.state = .error(error)
-                    return .failStatement(promise, with: error)
+                    return .failStatement(promise, with: error, cursorID: cursorToClose)
                 }
             }
 
@@ -788,9 +795,9 @@ struct StatementStateMachine {
             self.state = .error(error)
             switch streamState.fail() {
             case .read:
-                return .forwardStreamError(error, read: true, cursorID: nil)
+                return .forwardStreamError(error, read: true, cursorID: cursorToClose)
             case .wait:
-                return .forwardStreamError(error, read: false, cursorID: nil)
+                return .forwardStreamError(error, read: false, cursorID: cursorToClose)
             }
 
         case .commandComplete, .error:

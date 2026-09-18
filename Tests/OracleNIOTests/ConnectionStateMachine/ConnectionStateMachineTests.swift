@@ -260,4 +260,87 @@ import Testing
         )
         #expect(state.readyForStatementReceived() == .fireEventReadyForStatement)
     }
+
+    // MARK: Messages the server sends out of turn
+
+    /// Each of these used to be a precondition failure or a fatal error, so one packet from
+    /// a server out of step with the connection ended the host process.
+    @Test(arguments: Self.messagesOutOfTurn)
+    func messageOutOfTurnClosesTheConnection(_ message: MessageOutOfTurn) {
+        var state = ConnectionStateMachine(.readyForStatement)
+        guard case .closeConnectionAndCleanup(let cleanup) = message.deliver(&state) else {
+            Issue.record("Expected \(message) to close the connection")
+            return
+        }
+        #expect(cleanup.error.code == .unexpectedBackendMessage)
+        #expect(cleanup.action == .close)
+    }
+
+    @Test func resendDuringAStatementClosesTheConnection() {
+        let promise = EmbeddedEventLoop().makePromise(of: OracleRowStream.self)
+        promise.fail(OracleSQLError.uncleanShutdown)  // we don't care about the error at all.
+        var state = ConnectionStateMachine.readyForStatement()
+        _ = state.enqueue(task: .statement(StatementContext(statement: "SELECT 1 FROM dual", promise: promise)))
+        guard case .failStatement(_, let error, let cleanup?, _) = state.resendReceived() else {
+            Issue.record("Expected the statement to fail and the connection to close")
+            return
+        }
+        #expect(error.code == .unexpectedBackendMessage)
+        #expect(cleanup.action == .close)
+    }
+
+    @Test func resendWhileClosingIsIgnored() {
+        var state = ConnectionStateMachine(.closing)
+        #expect(state.resendReceived() == .wait)
+    }
+
+    @Test func parameterWhileLoggingOffIsIgnored() {
+        var state = ConnectionStateMachine(.loggingOff(nil))
+        #expect(state.parameterReceived(parameters: [:]) == .wait)
+    }
+
+    @Test func statusDuringALOBOperationClosesTheConnection() {
+        let promise = EmbeddedEventLoop().makePromise(of: ByteBuffer?.self)
+        promise.fail(OracleSQLError.uncleanShutdown)  // we don't care about the error at all.
+        var state = ConnectionStateMachine(.readyForStatement)
+        let context = LOBOperationContext(
+            sourceLOB: nil, sourceOffset: 0, destinationLOB: nil, destinationOffset: 0,
+            operation: .getLength, sendAmount: false, amount: 0, promise: promise
+        )
+        #expect(state.enqueue(task: .lobOperation(context)) == .sendLOBOperation(context))
+        guard
+            case .closeConnectionAndCleanup(let cleanup) =
+                state.statusReceived(.init(callStatus: 0, endToEndSequenceNumber: 0))
+        else {
+            Issue.record("Expected the connection to be closed")
+            return
+        }
+        #expect(cleanup.error.code == .unexpectedBackendMessage)
+    }
+
+    struct MessageOutOfTurn: CustomTestStringConvertible, Sendable {
+        let testDescription: String
+        let deliver: @Sendable (inout ConnectionStateMachine) -> ConnectionStateMachine.ConnectionAction
+    }
+
+    static let messagesOutOfTurn: [MessageOutOfTurn] = [
+        .init(testDescription: "accept") { state in
+            state.acceptReceived(
+                .init(newCapabilities: .desired()),
+                description: OracleConnection.Configuration(
+                    host: "localhost", service: .serviceName("test"), username: "test", password: "test"
+                ).getDescription()
+            )
+        },
+        .init(testDescription: "protocol") { $0.protocolReceived(.init(newCapabilities: .desired())) },
+        .init(testDescription: "data types") { $0.dataTypesReceived(.init()) },
+        .init(testDescription: "authentication parameters") { $0.parameterReceived(parameters: [:]) },
+        .init(testDescription: "bit vector") { $0.bitVectorReceived(.init(columnsCountSent: 1, bitVector: nil)) },
+        .init(testDescription: "bind vector") { $0.ioVectorReceived(.init(bindMetadata: [])) },
+        .init(testDescription: "flush out binds") { $0.flushOutBindsReceived() },
+        .init(testDescription: "LOB data") { $0.lobDataReceived(lobData: .init(buffer: ByteBuffer())) },
+        .init(testDescription: "LOB parameter") {
+            $0.lobParameterReceived(parameter: .init(amount: nil, boolFlag: nil))
+        },
+    ]
 }
