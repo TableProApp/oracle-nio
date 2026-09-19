@@ -124,11 +124,11 @@ extension ConnectionStateMachine.ConnectionAction: Equatable {
         case (.sendFlushOutBinds, .sendFlushOutBinds):
             return true
         case (
-            .failStatement(let lhsPromise, let lhsError, let lhsCleanup),
-            .failStatement(let rhsPromise, let rhsError, let rhsCleanup)
+            .failStatement(let lhsPromise, let lhsError, let lhsCleanup, let lhsCursorID),
+            .failStatement(let rhsPromise, let rhsError, let rhsCleanup, let rhsCursorID)
         ):
             return lhsPromise.futureResult === rhsPromise.futureResult && lhsError == rhsError
-                && lhsCleanup == rhsCleanup
+                && lhsCleanup == rhsCleanup && lhsCursorID == rhsCursorID
         case (
             .succeedStatement(let lhsPromise, let lhsResult),
             .succeedStatement(let rhsPromise, let rhsResult)
@@ -145,11 +145,13 @@ extension ConnectionStateMachine.ConnectionAction: Equatable {
             return lhsRows == rhsRows && lhsCursorID == rhsCursorID && lhsAffectedRows == rhsAffectedRows
                 && lhsLastRowID == rhsLastRowID
         case (
-            .forwardStreamError(let lhsError, let lhsRead, let lhsCursorID, let lhsClientCancelled),
-            .forwardStreamError(let rhsError, let rhsRead, let rhsCursorID, let rhsClientCancelled)
+            .forwardStreamError(let lhsError, let lhsRead, let lhsCursorID, let lhsClientCancelled, let lhsCleanup),
+            .forwardStreamError(let rhsError, let rhsRead, let rhsCursorID, let rhsClientCancelled, let rhsCleanup)
         ):
             return lhsError == rhsError && lhsRead == rhsRead && lhsCursorID == rhsCursorID
-                && lhsClientCancelled == rhsClientCancelled
+                && lhsClientCancelled == rhsClientCancelled && lhsCleanup == rhsCleanup
+        case (.forwardCancelComplete(let lhsCursorID), .forwardCancelComplete(let rhsCursorID)):
+            return lhsCursorID == rhsCursorID
 
         case (.sendMarker, .sendMarker):
             return true

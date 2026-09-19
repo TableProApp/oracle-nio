@@ -193,6 +193,84 @@ import Testing
     }
 
 
+    /// The session identity comes from the server's last authentication reply. A reply without it used to
+    /// end the host process in a precondition; now the login fails with the missing parameter.
+    @Test func loginWithoutASessionIDFails() async throws {
+        let eventLoop = NIOAsyncTestingEventLoop()
+        let protocolVersion =
+            OracleBackendMessageEncoder
+            .ProtocolVersion(Int(Constants.TNS_VERSION_MINIMUM))
+        let channel = try await NIOAsyncTestingChannel(loop: eventLoop) { channel in
+            try channel.pipeline.syncOperations.addHandler(
+                ReverseByteToMessageHandler(OracleFrontendMessageDecoder()))
+            try channel.pipeline.syncOperations.addHandler(
+                ReverseMessageToByteHandler(OracleBackendMessageEncoder(protocolVersion: protocolVersion))
+            )
+        }
+        try await channel.connect(to: .makeAddressResolvingHost("localhost", port: 1521))
+
+        let configuration = OracleConnection.Configuration(
+            establishedChannel: channel,
+            service: .serviceName("oracle"),
+            username: "username",
+            password: "password"
+        )
+
+        async let connectionPromise = OracleConnection.connect(
+            on: eventLoop,
+            configuration: configuration,
+            id: 1,
+            logger: Logger(label: "OracleConnectionTests")
+        )
+
+        #expect(try await channel.waitForOutboundWrite(as: OracleFrontendMessage.self) == .connect)
+        try await channel.writeInbound(
+            C(messages: [
+                OracleBackendMessage.accept(.init(newCapabilities: .desired()))
+            ]))
+        protocolVersion.value.withLockedValue({ $0 = Int(Constants.TNS_VERSION_DESIRED) })
+
+        #expect(try await channel.waitForOutboundWrite(as: OracleFrontendMessage.self) == .fastAuth)
+        try await channel.writeInbound(
+            C(messages: [
+                .parameter([
+                    "AUTH_PBKDF2_CSK_SALT": .init(
+                        value: "D390EB852C15E0BB6D09B35634196549", flags: 0),
+                    "AUTH_SESSKEY": .init(
+                        value: "E25A7AE255A27542B254C2566696E7902F8C06DCB46CB30F1EA9D859F56B5C94",
+                        flags: 0),
+                    "AUTH_VFR_DATA": .init(
+                        value: "CA52D77E4C359A2A5701E4DADB594963",
+                        flags: Constants.TNS_VERIFIER_TYPE_12C),
+                    "AUTH_PBKDF2_VGEN_COUNT": .init(value: "4096", flags: 0),
+                    "AUTH_PBKDF2_SDER_COUNT": .init(value: "3", flags: 0),
+                    "AUTH_GLOBALLY_UNIQUE_DBID\0": .init(
+                        value: "EB3F4E21E6E94E317CBA938EE89045DF", flags: 0),
+                ])
+            ]))
+        #expect(try await channel.waitForOutboundWrite(as: OracleFrontendMessage.self) == .authPhaseTwo)
+
+        // bypass security check
+        try await channel.pipeline.handler(type: OracleChannelHandler.self).map { $0.setComboKey(nil) }.get()
+
+        await #expect(throws: OracleSQLError.self) {
+            try await channel.writeInbound(
+                C(messages: [
+                    .parameter([
+                        "AUTH_VERSION_NO": .init(value: "386466199", flags: 0),
+                        "AUTH_SERIAL_NUM": .init(value: "26498", flags: 0),
+                    ])
+                ]))
+        }
+
+        do {
+            _ = try await connectionPromise
+            Issue.record("Expected the login to fail")
+        } catch let error as OracleSQLError {
+            #expect(error.code == .missingParameter)
+        }
+    }
+
     // MARK: Utility
 
     typealias C = OracleBackendMessageDecoder.Container

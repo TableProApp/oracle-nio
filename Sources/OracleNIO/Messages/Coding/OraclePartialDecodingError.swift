@@ -103,6 +103,22 @@ struct OraclePartialDecodingError: Error {
         )
     }
 
+    static func unknownServerSidePiggyback(
+        opCode: UInt8,
+        file: String = #fileID,
+        line: Int = #line
+    ) -> Self {
+        OraclePartialDecodingError(
+            category: .unknownMessageID,
+            description: """
+                Received a server side piggyback with operation code '\(opCode)'. Its length is \
+                unknown, so nothing after it in the packet can be decoded.
+                """,
+            file: file,
+            line: line
+        )
+    }
+
     static func unknownControlType(
         controlType: UInt16,
         file: String = #fileID,

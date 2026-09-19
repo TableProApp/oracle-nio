@@ -60,19 +60,19 @@ struct AuthenticationStateMachine {
         return .sendAuthenticationPhaseOne(self.authContext)
     }
 
-    func protocolReceived() -> Action {
-        precondition(self.useFastAuth)
-        guard case .authenticationPhaseOneSent = self.state else {
-            preconditionFailure("Invalid state: \(self.state)")
-        }
-        return .wait
-
+    /// Fast authentication bundles the protocol and data types negotiation into its first message, so their
+    /// replies arrive while that message is outstanding. Anywhere else they are a server out of step with the login.
+    func protocolReceived(_ message: OracleBackendMessage) -> Action {
+        self.negotiationReplyReceived(message)
     }
 
-    func dataTypesReceived() -> Action {
-        precondition(self.useFastAuth)
-        guard case .authenticationPhaseOneSent = self.state else {
-            preconditionFailure("Invalid state: \(self.state)")
+    func dataTypesReceived(_ message: OracleBackendMessage) -> Action {
+        self.negotiationReplyReceived(message)
+    }
+
+    private func negotiationReplyReceived(_ message: OracleBackendMessage) -> Action {
+        guard self.useFastAuth, case .authenticationPhaseOneSent = self.state else {
+            return .reportAuthenticationError(.unexpectedBackendMessage(message))
         }
         return .wait
     }

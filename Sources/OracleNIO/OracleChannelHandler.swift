@@ -192,8 +192,8 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             action = self.state.advancedNegotiationReceived(response)
         case .bitVector(let bitVector):
             action = self.state.bitVectorReceived(bitVector)
-        case .dataTypes:
-            action = self.state.dataTypesReceived()
+        case .dataTypes(let dataTypes):
+            action = self.state.dataTypesReceived(dataTypes)
         case .error(let error):
             action = self.state.backendErrorReceived(error)
         case .redirect(let redirect):
@@ -206,7 +206,7 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             action = self.state.parameterReceived(parameters: parameter)
         case .protocol(let `protocol`):
             self.capabilities = `protocol`.newCapabilities
-            action = self.state.protocolReceived()
+            action = self.state.protocolReceived(`protocol`)
         case .resend:
             action = self.state.resendReceived()
         case .status(let status):
@@ -441,12 +441,16 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             )
         case .succeedStatement(let promise, let result):
             self.succeedStatement(promise, result: result, context: context)
-        case .failStatement(let promise, let error, let cleanupContext):
+        case .failStatement(let promise, let error, let cleanupContext, let cursorID):
             promise.fail(error)
+            if let cursorID {
+                self.cleanupContext.cursorsToClose.insert(cursorID)
+            }
             if let cleanupContext {
                 self.closeConnectionAndCleanup(cleanupContext, context: context)
+            } else {
+                self.run(self.state.readyForStatementReceived(), with: context)
             }
-            self.run(self.state.readyForStatementReceived(), with: context)
 
         case .forwardRows(let rows):
             self.rowStream!.receive(rows)
@@ -468,21 +472,29 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             self.run(self.state.readyForStatementReceived(), with: context)
 
         case .forwardStreamError(
-            let error, let read, let cursorID, let clientCancelled
+            let error, let read, let cursorID, let clientCancelled, let cleanupContext
         ):
             self.rowStream!.receive(completion: .failure(error))
             self.rowStream = nil
             if let cursorID {
-                cleanupContext.cursorsToClose.insert(cursorID)
+                self.cleanupContext.cursorsToClose.insert(cursorID)
             } else if read {
                 context.read()
             }
 
-            if clientCancelled {
+            if let cleanupContext {
+                self.closeConnectionAndCleanup(cleanupContext, context: context)
+            } else if clientCancelled {
                 self.run(self.state.statementStreamCancelled(), with: context)
             } else {
                 self.run(self.state.readyForStatementReceived(), with: context)
             }
+
+        case .forwardCancelComplete(let cursorID):
+            if let cursorID, cursorID != 0 {
+                self.cleanupContext.cursorsToClose.insert(cursorID)
+            }
+            self.run(self.state.readyForStatementReceived(), with: context)
 
         case .sendMarker(let read):
             self.encoder.marker()
@@ -796,7 +808,13 @@ final class OracleChannelHandler: ChannelDuplexHandler {
     ) {
         // Did finish starting and authenticating
         self.cancelLoginTimeout()
-        let serverContext = self.getServerContext(from: parameters)
+        let serverContext: OracleSQLEvent.StartupContext
+        do {
+            serverContext = try self.getServerContext(from: parameters)
+        } catch {
+            self.run(self.state.errorHappened(error), with: context)
+            return
+        }
         context.fireUserInboundEventTriggered(OracleSQLEvent.startupDone(serverContext))
         context.fireUserInboundEventTriggered(OracleSQLEvent.readyForStatement)
     }
@@ -944,17 +962,17 @@ final class OracleChannelHandler: ChannelDuplexHandler {
 
     // MARK: - Utility
 
+    /// The session identity and version come from the server's last authentication reply, so a server that
+    /// leaves one out fails the login instead of ending the process.
     private func getServerContext(
         from parameters: OracleBackendMessage.Parameter
-    ) -> OracleSQLEvent.StartupContext {
-        let version = getVersion(from: parameters)
-        guard
-            let sessionID = (parameters["AUTH_SESSION_ID"]?.value)
-                .flatMap(Int.init),
-            let serialNumber = (parameters["AUTH_SERIAL_NUM"]?.value)
-                .flatMap(Int.init)
-        else {
-            preconditionFailure()
+    ) throws(OracleSQLError) -> OracleSQLEvent.StartupContext {
+        let version = try getVersion(from: parameters)
+        guard let sessionID = (parameters["AUTH_SESSION_ID"]?.value).flatMap(Int.init) else {
+            throw OracleSQLError.missingParameter(expected: "AUTH_SESSION_ID", in: parameters)
+        }
+        guard let serialNumber = (parameters["AUTH_SERIAL_NUM"]?.value).flatMap(Int.init) else {
+            throw OracleSQLError.missingParameter(expected: "AUTH_SERIAL_NUM", in: parameters)
         }
         return OracleSQLEvent.StartupContext(
             version: version,
@@ -981,12 +999,12 @@ final class OracleChannelHandler: ChannelDuplexHandler {
     ///  ```
     private func getVersion(
         from parameters: OracleBackendMessage.Parameter
-    ) -> OracleVersion {
+    ) throws(OracleSQLError) -> OracleVersion {
         guard
             let fullVersionNumber = (parameters["AUTH_VERSION_NO"]?.value)
                 .flatMap(Int.init)
         else {
-            preconditionFailure()
+            throw OracleSQLError.missingParameter(expected: "AUTH_VERSION_NO", in: parameters)
         }
 
         if self.capabilities.ttcFieldVersion >= Constants.TNS_CCAP_FIELD_VERSION_18_1_EXT_1 {
