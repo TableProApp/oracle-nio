@@ -22,7 +22,7 @@ extension OracleBackendMessage {
             from buffer: inout NIOCore.ByteBuffer,
             context: OracleBackendMessageDecoder.Context
         ) throws -> OracleBackendMessage.`Protocol` {
-            buffer.moveReaderIndex(forwardBy: 2) // skip protocol array
+            try buffer.throwingMoveReaderIndex(forwardBy: 2) // skip protocol array
             while true { // skip server banner
                 let c = buffer.readInteger(as: UInt8.self) ?? 0
                 if c == 0 { break }
@@ -34,12 +34,12 @@ extension OracleBackendMessage {
             var capabilities = context.capabilities
             capabilities.charsetID = charsetID
 
-            buffer.moveReaderIndex(forwardBy: 1) // skip server flags
+            try buffer.throwingMoveReaderIndex(forwardBy: 1) // skip server flags
             let elementsCount = try buffer.throwingReadInteger(
                 endianness: .little, as: UInt16.self
             )
             if elementsCount > 0 { // skip elements
-                buffer.moveReaderIndex(forwardBy: Int(elementsCount) * 5)
+                try buffer.throwingMoveReaderIndex(forwardBy: Int(elementsCount) * 5)
             }
 
             let fdoLength = try Int(buffer.throwingReadInteger(as: UInt16.self))

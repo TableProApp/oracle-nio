@@ -20,12 +20,8 @@ extension ByteBuffer {
     }
 
     @inlinable
-    mutating func skipUB2() {
-        skipUB(2)
-    }
-
     mutating func throwingSkipUB2(file: String = #fileID, line: Int = #line) throws {
-        try throwingSkipUB(4, file: file, line: line)
+        try throwingSkipUB(2, file: file, line: line)
     }
 
     @inlinable
@@ -91,10 +87,6 @@ extension ByteBuffer {
         )
     }
 
-    mutating func skipUB4() {
-        skipUB(4)
-    }
-
     mutating func throwingSkipUB4(file: String = #fileID, line: Int = #line) throws {
         try throwingSkipUB(4, file: file, line: line)
     }
@@ -133,10 +125,6 @@ extension ByteBuffer {
                 file: file, line: line
             )
         )
-    }
-
-    mutating func skipUB8() {
-        skipUB(8)
     }
 
     mutating func throwingSkipUB8(file: String = #fileID, line: Int = #line) throws {
@@ -201,16 +189,11 @@ extension ByteBuffer {
         }
     }
 
-    @inline(__always)
+    /// A packet can end inside an integer. Skipping only the part that arrived leaves the rest to be
+    /// read as the next message, so a short field throws and the decoder retries with the next packet.
     @inlinable
-    mutating func skipUB(_ maxLength: Int) {
-        guard let length = readUBLength() else { return }
-        guard length <= maxLength, self.readableBytes >= Int(length) else { return }
-        self.moveReaderIndex(forwardBy: Int(length))
-    }
-
     @inline(__always)
-    private mutating func throwingSkipUB(_ maxLength: Int, file: String = #fileID, line: Int = #line) throws {
+    mutating func throwingSkipUB(_ maxLength: Int, file: String = #fileID, line: Int = #line) throws {
         guard let length = readUBLength().flatMap(Int.init) else {
             throw OraclePartialDecodingError.expectedAtLeastNRemainingBytes(
                 MemoryLayout<UInt8>.size,
@@ -228,29 +211,22 @@ extension ByteBuffer {
 }
 
 extension ByteBuffer {
-    /// Skip a number of bytes that may or may not be chunked in the buffer.
-    /// The first byte gives the length. If the length is
-    /// TNS_LONG_LENGTH_INDICATOR, however, chunks are read and discarded.
-    /// - Returns: `true` if all bytes could be skipped,
-    /// `false` if more bytes have to be retrieved from the server in order to continue.
-    @discardableResult
-    mutating func skipRawBytesChunked() -> Bool {
-        guard
-            let length = self.readInteger(as: UInt8.self),
-            readableBytes >= length
-        else { return false }
-        if length != Constants.TNS_LONG_LENGTH_INDICATOR {
-            moveReaderIndex(forwardBy: Int(length))
-        } else {
+    /// Skips a value that may be chunked: a length byte, where 0 and `TNS_NULL_LENGTH_INDICATOR` mean
+    /// NULL and `TNS_LONG_LENGTH_INDICATOR` starts UB4-prefixed chunks ending in a zero-length one.
+    /// Throws when the value continues in the next packet, so the decoder retries with it.
+    mutating func throwingSkipRawBytesChunked(file: String = #fileID, line: Int = #line) throws {
+        let length = try self.throwingReadInteger(as: UInt8.self, file: file, line: line)
+        switch length {
+        case 0, Constants.TNS_NULL_LENGTH_INDICATOR:
+            return
+        case Constants.TNS_LONG_LENGTH_INDICATOR:
             while true {
-                guard let tmp = self.readUB4() else {
-                    return false
-                }
-                if tmp == 0 { break }
-                guard readableBytes > tmp else { return false }
-                moveReaderIndex(forwardBy: Int(tmp))
+                let chunkLength = try self.throwingReadUB4(file: file, line: line)
+                if chunkLength == 0 { return }
+                try self.throwingMoveReaderIndex(forwardBy: Int(chunkLength), file: file, line: line)
             }
+        default:
+            try self.throwingMoveReaderIndex(forwardBy: Int(length), file: file, line: line)
         }
-        return true
     }
 }

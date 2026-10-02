@@ -158,13 +158,13 @@ extension OracleBackendMessage {
                     }
                 }
             case .cursor:
-                buffer.moveReaderIndex(forwardBy: 1)  // length (fixed value)
+                try buffer.throwingMoveReaderIndex(forwardBy: 1)  // length (fixed value)
 
                 let readerIndex = buffer.readerIndex
                 _ = try DescribeInfo._decode(
                     from: &buffer, context: .init(capabilities: capabilities)
                 )
-                buffer.skipUB2()  // cursor id
+                try buffer.throwingSkipUB2()  // cursor id
                 let length = buffer.readerIndex - readerIndex
                 buffer.moveReaderIndex(to: readerIndex)
                 columnValue = ByteBuffer(integer: Constants.TNS_LONG_LENGTH_INDICATOR)
@@ -183,9 +183,7 @@ extension OracleBackendMessage {
             case .bfile:
                 let length = try buffer.throwingReadUB4()
                 if length > 0 {
-                    if !buffer.skipRawBytesChunked() {
-                        throw MissingDataDecodingError.Trigger()
-                    }
+                    try buffer.throwingSkipRawBytesChunked()
                 }
                 columnValue = .init(bytes: [0])
             case .clob, .blob:
@@ -220,45 +218,38 @@ extension OracleBackendMessage {
             case .vector:
                 let length = try buffer.throwingReadUB4()
                 if length > 0 {
-                    buffer.skipUB8()  // size (unused)
-                    buffer.skipUB4()  // chunk size (unused)
+                    try buffer.throwingSkipUB8()  // size (unused)
+                    try buffer.throwingSkipUB4()  // chunk size (unused)
                     switch buffer.readOracleSlice() {
                     case .some(let slice):
                         columnValue = slice
                     case .none:
                         throw MissingDataDecodingError.Trigger()
                     }
-                    if !buffer.skipRawBytesChunked() {  // LOB locator (unused)
-                        throw MissingDataDecodingError.Trigger()
-                    }
+                    try buffer.throwingSkipRawBytesChunked()  // LOB locator (unused)
                 } else {
                     columnValue = .init(bytes: [0])  // empty buffer
                 }
             case .intNamed:
                 let startIndex = buffer.readerIndex
                 if try buffer.throwingReadUB4() > 0 {
-                    if !buffer.skipRawBytesChunked() {  // type oid
-                        throw MissingDataDecodingError.Trigger()
-                    }
+                    try buffer.throwingSkipRawBytesChunked()  // type oid
                 }
                 if try buffer.throwingReadUB4() > 0 {
-                    if !buffer.skipRawBytesChunked() {  // oid
-                        throw MissingDataDecodingError.Trigger()
-                    }
+                    try buffer.throwingSkipRawBytesChunked()  // oid
                 }
                 if try buffer.throwingReadUB4() > 0 {
-                    if !buffer.skipRawBytesChunked() {  // snapshot
-                        throw MissingDataDecodingError.Trigger()
-                    }
+                    try buffer.throwingSkipRawBytesChunked()  // snapshot
                 }
-                buffer.skipUB2()  // version
+                try buffer.throwingSkipUB2()  // version
                 let dataLength = try buffer.throwingReadUB4()
-                buffer.skipUB2()  // flags
-                if dataLength > 0 {
-                    if !buffer.skipRawBytesChunked() {  // data
-                        throw MissingDataDecodingError.Trigger()
-                    }
+                try buffer.throwingSkipUB2()  // flags
+                guard dataLength > 0 else {
+                    // A NULL object still carries its type OID, version and flags.
+                    columnValue = ByteBuffer(bytes: [0])  // NULL indicator
+                    break
                 }
+                try buffer.throwingSkipRawBytesChunked()  // data
                 let endIndex = buffer.readerIndex
                 buffer.moveReaderIndex(to: startIndex)
                 columnValue = ByteBuffer(integer: Constants.TNS_LONG_LENGTH_INDICATOR)
@@ -280,8 +271,8 @@ extension OracleBackendMessage {
             }
 
             if [.long, .longRAW].contains(oracleType) {
-                buffer.skipSB4()  // null indicator
-                buffer.skipUB4()  // return code
+                try buffer.throwingSkipSB4()  // null indicator
+                try buffer.throwingSkipUB4()  // return code
             }
 
             return columnValue
@@ -299,7 +290,7 @@ extension OracleBackendMessage {
             var columns: [ColumnStorage] = []
             if statementContext.isReturning {
                 for outBind in outBinds {
-                    let rowCount = buffer.readUB4() ?? 0
+                    let rowCount = try buffer.throwingReadUB4()
                     if rowCount > 0 {
                         for _ in 0..<rowCount {
                             columns.append(
@@ -343,7 +334,7 @@ extension OracleBackendMessage {
                 capabilities: capabilities
             )
 
-            let actualBytesCount = buffer.readSB4() ?? 0
+            let actualBytesCount = try buffer.throwingReadSB4()
             if actualBytesCount < 0 && metadata.dataType._oracleType == .boolean {
                 return ByteBuffer(bytes: [0])  // empty buffer
             } else if actualBytesCount != 0 && !columnData.oracleColumnIsEmpty {

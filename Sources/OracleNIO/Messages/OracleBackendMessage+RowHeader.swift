@@ -27,18 +27,19 @@ extension OracleBackendMessage {
             from buffer: inout ByteBuffer,
             context: OracleBackendMessageDecoder.Context
         ) throws -> OracleBackendMessage.RowHeader {
-            buffer.moveReaderIndex(forwardBy: 1)  // flags
-            buffer.skipUB2()  // number of requests
-            buffer.skipUB4()  // iteration number
-            buffer.skipUB4()  // number of iterations
-            buffer.skipUB2()  // buffer length
+            try buffer.throwingMoveReaderIndex(forwardBy: 1)  // flags
+            try buffer.throwingSkipUB2()  // number of requests
+            try buffer.throwingSkipUB4()  // iteration number
+            try buffer.throwingSkipUB4()  // number of iterations
+            try buffer.throwingSkipUB2()  // buffer length
             var bitVector: [UInt8]? = nil
-            if let bytesCount = buffer.readUB4(), bytesCount > 0 {
-                buffer.moveReaderIndex(forwardBy: 1)  // skip repeated length
-                bitVector = buffer.readBytes(length: Int(bytesCount))
+            let bitVectorLength = try buffer.throwingReadUB4()
+            if bitVectorLength > 0 {
+                try buffer.throwingMoveReaderIndex(forwardBy: 1)  // skip repeated length
+                bitVector = try buffer.throwingReadBytes(length: Int(bitVectorLength))
             }
-            if let numberOfBytes = buffer.readUB4(), numberOfBytes > 0 {
-                buffer.skipRawBytesChunked()  // rxhrid
+            if try buffer.throwingReadUB4() > 0 {
+                try buffer.throwingSkipRawBytesChunked()  // rxhrid
             }
             return .init(bitVector: bitVector)
         }
