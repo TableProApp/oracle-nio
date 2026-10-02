@@ -270,7 +270,8 @@ extension OracleBackendMessage {
                 )
             }
 
-            if [.long, .longRAW].contains(oracleType) {
+            // Only a fetched LONG carries this trailer; an OUT bind is followed by its actual byte count.
+            if !forBind, [.long, .longRAW].contains(oracleType) {
                 try buffer.throwingSkipSB4()  // null indicator
                 try buffer.throwingSkipUB4()  // return code
             }

@@ -19,6 +19,7 @@ import Testing
 
 private typealias RowData = OracleBackendMessage.RowData
 private typealias BitVector = OracleBackendMessage.BitVector
+private typealias InOutVector = OracleBackendMessage.InOutVector
 
 @Suite(.timeLimit(.minutes(5))) struct RowDataTrapHardeningTests {
 
@@ -36,6 +37,21 @@ private typealias BitVector = OracleBackendMessage.BitVector
         context.bitVector = []
         #expect(throws: OraclePartialDecodingError.self) {
             try RowData.decode(from: &buffer, context: context)
+        }
+    }
+
+    /// The bind count is the iteration count times 256 plus the request count, both from the server.
+    /// A count of 2^24 iterations overflowed a UInt32 and ended the process.
+    @Test func bindVectorWithAnImpossibleCountThrows() {
+        var buffer = ByteBuffer(bytes: [
+            0,  // flag
+            0,  // number of requests
+            4, 1, 0, 0, 0,  // number of iterations: 2^24
+        ])
+        let context = OracleBackendMessageDecoder.Context(capabilities: .init())
+        context.statementContext = .init(statement: "BEGIN NULL; END;")
+        #expect(throws: OraclePartialDecodingError.self) {
+            try InOutVector.decode(from: &buffer, context: context)
         }
     }
 

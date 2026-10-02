@@ -227,6 +227,22 @@ private typealias RowData = OracleBackendMessage.RowData
         #expect(result == .init(columns: [.data(ByteBuffer(bytes: [0]))]))
     }
 
+    /// An OUT bind ends with its actual byte count. The LONG trailer belongs to fetched rows only.
+    @Test(arguments: [OracleDataType.long, .longRAW])
+    func longOutBindEndsWithItsByteCount(type: OracleDataType) throws {
+        var buffer = ByteBuffer(bytes: [
+            1, 65,  // value
+            0,  // actual byte count
+        ])
+        let context = OracleBackendMessageDecoder.Context(capabilities: .init())
+        var statement: OracleStatement = ""
+        statement.binds.append(.init(dataType: type), bindName: "1", isReturning: false)
+        context.statementContext = .init(statement: statement)
+        let row = try RowData.decode(from: &buffer, context: context)
+        #expect(row == .init(columns: [.data(ByteBuffer(bytes: [1, 65]))]))
+        #expect(buffer.readableBytes == 0)
+    }
+
     /// Either signal makes the decoder keep the message and retry it with the next packet.
     private static func expectNeedsMoreData(
         _ buffer: inout ByteBuffer,

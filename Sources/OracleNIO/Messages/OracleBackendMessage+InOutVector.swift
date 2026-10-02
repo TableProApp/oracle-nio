@@ -36,7 +36,12 @@ extension OracleBackendMessage {
             try buffer.throwingMoveReaderIndex(forwardBy: MemoryLayout<UInt8>.size)  // flag
             let temp16 = try buffer.throwingReadUB2()  // number of requests
             let temp32 = try buffer.throwingReadUB4()  // number of iterations
-            let numberOfBinds = Int(temp32 * 256 + UInt32(temp16))
+            let numberOfBinds = Int(temp32) * 256 + Int(temp16)
+            // The count comes from the server; one the statement could not have bound is corrupt, and
+            // reserving room for it would exhaust memory before the state machine could reject it.
+            guard numberOfBinds <= context.statementContext?.binds.count ?? 0 else {
+                throw OraclePartialDecodingError.fieldNotDecodable(type: InOutVector.self)
+            }
             try buffer.throwingSkipUB4()  // number of iterations this time
             try buffer.throwingSkipUB2()  // uac buffer length
             let bytesCount = try buffer.throwingReadUB2()  // bit vector for fast fetch
