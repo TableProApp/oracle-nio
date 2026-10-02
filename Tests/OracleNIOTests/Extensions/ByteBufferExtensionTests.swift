@@ -21,6 +21,7 @@ import Testing
 
     let empty = ByteBuffer()
     let zeroLength = ByteBuffer(bytes: [0])
+    let nullLength = ByteBuffer(bytes: [Constants.TNS_NULL_LENGTH_INDICATOR])
     let normalLengthMissingBytes = ByteBuffer(bytes: [5, 0, 0])
     let normalLength = ByteBuffer(bytes: [3, 0, 0, 0])
     let longLengthWithoutData = ByteBuffer(integer: Constants.TNS_LONG_LENGTH_INDICATOR)
@@ -52,26 +53,21 @@ import Testing
         return buffer
     }()
 
-    @Test func skipRawBytesChunked() {
-        var buffer = empty
-        #expect(buffer.skipRawBytesChunked() == false)
-        buffer = normalLengthMissingBytes
-        #expect(buffer.skipRawBytesChunked() == false)
-        buffer = zeroLength
-        #expect(buffer.skipRawBytesChunked() == true)
-        buffer = normalLength
-        #expect(buffer.skipRawBytesChunked() == true)
-
-        buffer = longLengthWithoutData
-        #expect(buffer.skipRawBytesChunked() == false)
-        buffer = longLengthWithoutEnoughData
-        #expect(buffer.skipRawBytesChunked() == false)
-        buffer = longLengthWithoutEnoughDataOnSecondLength
-        #expect(buffer.skipRawBytesChunked() == false)
-        buffer = longLengthWithoutEnoughDataAfterSecondLength
-        #expect(buffer.skipRawBytesChunked() == false)
-        buffer = longLengthData
-        #expect(buffer.skipRawBytesChunked() == true)
+    @Test func throwingSkipRawBytesChunked() throws {
+        for incomplete in [
+            empty, normalLengthMissingBytes, longLengthWithoutData, longLengthWithoutEnoughData,
+            longLengthWithoutEnoughDataOnSecondLength, longLengthWithoutEnoughDataAfterSecondLength,
+        ] {
+            var buffer = incomplete
+            #expect(throws: OraclePartialDecodingError.self) {
+                try buffer.throwingSkipRawBytesChunked()
+            }
+        }
+        for complete in [zeroLength, normalLength, longLengthData, nullLength] {
+            var buffer = complete
+            try buffer.throwingSkipRawBytesChunked()
+            #expect(buffer.readableBytes == 0)
+        }
     }
 
     @Test func oracleSpecificLengthPrefixedSlice() {

@@ -15,6 +15,7 @@
 import NIOCore
 
 extension ByteBuffer {
+    @inlinable
     @inline(__always)
     mutating func throwingMoveReaderIndex(forwardBy: Int, file: String = #fileID, line: Int = #line) throws {
         if self.readableBytes < forwardBy {

@@ -84,7 +84,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
         try buffer.throwingSkipUB4()  // success iters
         let byteCount = try buffer.throwingReadUB4()
         if byteCount > 0 {
-            buffer.skipRawBytesChunked()  // oerrdd (logical rowid)
+            try buffer.throwingSkipRawBytesChunked()  // oerrdd (logical rowid)
         }
 
         var batch = [OracleError]()
@@ -97,7 +97,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
             for _ in 0..<3 {
                 let chunkLength = try buffer.throwingReadUB4()
                 if chunkLength > 0 {
-                    buffer.skipRawBytesChunked()
+                    try buffer.throwingSkipRawBytesChunked()
                 }
             }
             number = earlyErrorNumber

@@ -227,11 +227,11 @@ final class OracleRowStream: @unchecked Sendable {
             )
         case .finished(let buffer):
             _ = source.yield(contentsOf: buffer)
-            source.finish()
             self.downstreamState = .consumed(.success(()))
+            source.finish()
         case .failure(let error):
-            source.finish(error)
             self.downstreamState = .consumed(.failure(error))
+            source.finish(error)
         }
 
         return OracleRowSequence(
@@ -450,8 +450,8 @@ final class OracleRowStream: @unchecked Sendable {
                 // immediately request more
                 dataSource.request(for: self)
             } catch {
-                dataSource.cancel(for: self)
                 self.downstreamState = .consumed(.failure(error))
+                dataSource.cancel(for: self)
                 promise.fail(error)
                 return
             }
@@ -522,8 +522,10 @@ final class OracleRowStream: @unchecked Sendable {
             promise.succeed(rows)
 
         case .asyncSequence(let source, _):
-            source.finish()
+            // Finishing under a waiting consumer calls `didTerminate()` right here, so the stream must
+            // already read as consumed or it asks the data source to cancel a statement that has ended.
             self.downstreamState = .consumed(.success(()))
+            source.finish()
 
         case .consumed:
             break
@@ -549,8 +551,8 @@ final class OracleRowStream: @unchecked Sendable {
             promise.fail(error)
 
         case .asyncSequence(let consumer, _):
-            consumer.finish(error)
             self.downstreamState = .consumed(.failure(error))
+            consumer.finish(error)
 
         case .consumed:
             break

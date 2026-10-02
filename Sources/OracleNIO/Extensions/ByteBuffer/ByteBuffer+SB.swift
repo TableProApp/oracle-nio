@@ -56,6 +56,17 @@ extension ByteBuffer {
         }
     }
 
+    mutating func throwingReadSB4(
+        file: String = #fileID, line: Int = #line
+    ) throws -> Int32 {
+        try self.readSB4().value(
+            or: OraclePartialDecodingError.expectedAtLeastNRemainingBytes(
+                MemoryLayout<Int8>.size, actual: self.readableBytes,
+                file: file, line: line
+            )
+        )
+    }
+
     mutating func readSB8() -> Int64? {
         guard let length = readUBLength() else { return nil }
         switch length {
@@ -85,5 +96,7 @@ extension ByteBuffer {
         )
     }
 
-    mutating func skipSB4() { skipUB4() }
+    mutating func throwingSkipSB4(file: String = #fileID, line: Int = #line) throws {
+        try self.throwingSkipUB(4, file: file, line: line)
+    }
 }

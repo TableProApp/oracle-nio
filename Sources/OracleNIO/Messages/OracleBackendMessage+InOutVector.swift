@@ -33,19 +33,24 @@ extension OracleBackendMessage {
             from buffer: inout ByteBuffer,
             context: OracleBackendMessageDecoder.Context
         ) throws -> OracleBackendMessage.InOutVector {
-            buffer.moveReaderIndex(forwardBy: MemoryLayout<UInt8>.size)  // flag
+            try buffer.throwingMoveReaderIndex(forwardBy: MemoryLayout<UInt8>.size)  // flag
             let temp16 = try buffer.throwingReadUB2()  // number of requests
             let temp32 = try buffer.throwingReadUB4()  // number of iterations
-            let numberOfBinds = Int(temp32 * 256 + UInt32(temp16))
-            buffer.skipUB4()  // number of iterations this time
-            buffer.skipUB2()  // uac buffer length
+            let numberOfBinds = Int(temp32) * 256 + Int(temp16)
+            // The count comes from the server; one the statement could not have bound is corrupt, and
+            // reserving room for it would exhaust memory before the state machine could reject it.
+            guard numberOfBinds <= context.statementContext?.binds.count ?? 0 else {
+                throw OraclePartialDecodingError.fieldNotDecodable(type: InOutVector.self)
+            }
+            try buffer.throwingSkipUB4()  // number of iterations this time
+            try buffer.throwingSkipUB2()  // uac buffer length
             let bytesCount = try buffer.throwingReadUB2()  // bit vector for fast fetch
             if bytesCount > 0 {
-                buffer.moveReaderIndex(forwardBy: Int(bytesCount))
+                try buffer.throwingMoveReaderIndex(forwardBy: Int(bytesCount))
             }
             let rowIDLength = try buffer.throwingReadUB2()
             if rowIDLength > 0 {
-                buffer.moveReaderIndex(forwardBy: Int(rowIDLength))
+                try buffer.throwingMoveReaderIndex(forwardBy: Int(rowIDLength))
             }
             var metadata = [BindMetadatum]()
             metadata.reserveCapacity(numberOfBinds)

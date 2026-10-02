@@ -57,6 +57,47 @@ import Testing
         #expect(thrown == OracleSQLError.connectionError(underlying: ChannelError.alreadyClosed))
     }
 
+    /// Bytes the decoder cannot read are a protocol failure, not a lost connection, so the client can
+    /// tell a user the server sent something unexpected instead of asking them to reconnect.
+    @Test func undecodableMessageFailsAsADecodingFailure() async throws {
+        let eventLoop = NIOAsyncTestingEventLoop()
+        let channel = try await NIOAsyncTestingChannel(loop: eventLoop) { channel in
+            try channel.pipeline.syncOperations.addHandler(
+                ReverseByteToMessageHandler(OracleFrontendMessageDecoder()))
+        }
+        try await channel.connect(to: .makeAddressResolvingHost("localhost", port: 1521))
+
+        let configuration = OracleConnection.Configuration(
+            establishedChannel: channel,
+            service: .serviceName("oracle"),
+            username: "username",
+            password: "password"
+        )
+
+        async let connectionPromise = OracleConnection.connect(
+            on: eventLoop,
+            configuration: configuration,
+            id: 1,
+            logger: Logger(label: "OracleConnectionTests")
+        )
+
+        #expect(try await channel.waitForOutboundWrite(as: OracleFrontendMessage.self) == .connect)
+        channel.pipeline.fireErrorCaught(
+            OracleMessageDecodingError.withPartialError(
+                .unknownMessageID(messageID: 0),
+                packetID: OracleBackendMessage.ID.data.rawValue,
+                messageBytes: ByteBuffer(bytes: [0])
+            )
+        )
+
+        do {
+            _ = try await connectionPromise
+            Issue.record("Expected the login to fail")
+        } catch let error as OracleSQLError {
+            #expect(error.code == .messageDecodingFailure)
+        }
+    }
+
     @Test func configurationChangesAreReflected() {
         var configuration = OracleConnection.Configuration(
             host: "localhost",

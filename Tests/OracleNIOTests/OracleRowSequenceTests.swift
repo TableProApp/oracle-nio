@@ -291,6 +291,45 @@ import Testing
         }
     }
 
+    /// Finishing the sequence under a suspended consumer calls `didTerminate()` on the event loop, inside
+    /// the call that delivers the stream's end. A stream the producer ended must not ask the producer to
+    /// cancel it: the statement is already over, and cancelling it trapped the connection's state machine.
+    @Test(arguments: [true, false])
+    func endingTheStreamUnderAWaitingConsumerDoesNotCancelTheSource(failing: Bool) async throws {
+        let dataSource = MockRowDataSource()
+        let eventLoop = NIOSingletons.posixEventLoopGroup.next()
+        let stream = OracleRowStream(
+            source: .stream([testColumn], dataSource),
+            eventLoop: eventLoop,
+            logger: self.logger,
+            affectedRows: nil,
+            lastRowID: nil,
+            rowCounts: nil,
+            batchErrors: nil
+        )
+
+        let rowSequence = try await eventLoop.submit { stream.asyncSequence() }.get()
+        var rowIterator = rowSequence.makeAsyncIterator()
+
+        eventLoop.scheduleTask(in: .milliseconds(100)) {
+            if failing {
+                stream.receive(completion: .failure(OracleSQLError.uncleanShutdown))
+            } else {
+                stream.receive(completion: .success(.init(affectedRows: 0, lastRowID: nil)))
+            }
+        }
+
+        if failing {
+            await #expect(throws: OracleSQLError.uncleanShutdown) {
+                _ = try await rowIterator.next()
+            }
+        } else {
+            #expect(try await rowIterator.next() == nil)
+        }
+        try await eventLoop.submit {}.get()
+        #expect(dataSource.cancelCount == 0)
+    }
+
     @Test func adaptiveRowBufferShrinksAndGrows() async throws {
         let dataSource = MockRowDataSource()
         let embeddedEventLoop = EmbeddedEventLoop()

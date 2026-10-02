@@ -886,9 +886,11 @@ struct ConnectionStateMachine {
         }
     }
 
+    /// A row stream calls back from the event loop, and the statement it belonged to can already have
+    /// ended, for example when a fatal error closed the connection. There is nothing left to act on.
     mutating func cancelStatementStream() -> ConnectionAction {
         guard case .statement(var statement) = state else {
-            preconditionFailure("Tried to cancel stream without active statement")
+            return .wait
         }
 
         return self.avoidingStateMachineCoW { machine in
@@ -901,7 +903,7 @@ struct ConnectionStateMachine {
 
     mutating func statementStreamCancelled() -> ConnectionAction {
         guard case .statement = state else {
-            preconditionFailure("Tried to cancel stream without active statement")
+            return .wait
         }
 
         self.markerState = .markerSent
@@ -910,9 +912,7 @@ struct ConnectionStateMachine {
 
     mutating func requestStatementRows() -> ConnectionAction {
         guard case .statement(var statement) = state else {
-            preconditionFailure(
-                "Tried to consume next row, without active statement"
-            )
+            return .wait
         }
 
         return self.avoidingStateMachineCoW { machine in

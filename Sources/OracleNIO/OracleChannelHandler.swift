@@ -143,6 +143,8 @@ final class OracleChannelHandler: ChannelDuplexHandler {
         let action =
             if let error = error as? OracleSQLError {
                 self.state.errorHappened(error)
+            } else if let error = error as? OracleMessageDecodingError {
+                self.state.errorHappened(.messageDecodingFailure(error))
             } else {
                 self.state.errorHappened(.connectionError(underlying: error))
             }
@@ -474,8 +476,11 @@ final class OracleChannelHandler: ChannelDuplexHandler {
         case .forwardStreamError(
             let error, let read, let cursorID, let clientCancelled, let cleanupContext
         ):
-            self.rowStream!.receive(completion: .failure(error))
+            // Detach the stream before it hears the error: delivering it can call back into
+            // `cancel(for:)` and `request(for:)`, which must not reach a statement that has ended.
+            let rowStream = self.rowStream
             self.rowStream = nil
+            rowStream?.receive(completion: .failure(error))
             if let cursorID {
                 self.cleanupContext.cursorsToClose.insert(cursorID)
             } else if read {

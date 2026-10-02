@@ -437,6 +437,17 @@ import Testing
         #expect(cleanup.action == .close)
     }
 
+    /// A row stream hears about a fatal error after the connection has left the statement, and its
+    /// consumer can still ask for rows or cancel from the event loop. Neither has a statement to act on.
+    @Test func streamCallbacksAfterAFatalErrorAreIgnored() {
+        let promise = Self.discardedPromise()
+        var state = Self.streamingQuery(promise)
+        Self.expectStreamClosedByUnexpectedMessage(state.describeInfoReceived(Self.varcharDescribeInfo))
+        #expect(state.cancelStatementStream() == .wait)
+        #expect(state.requestStatementRows() == .wait)
+        #expect(state.statementStreamCancelled() == .wait)
+    }
+
     @Test func describeInfoWhileStreamingClosesTheConnection() {
         let promise = Self.discardedPromise()
         var state = Self.streamingQuery(promise)

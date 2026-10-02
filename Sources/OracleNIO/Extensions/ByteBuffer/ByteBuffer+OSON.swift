@@ -25,9 +25,7 @@ extension ByteBuffer {
         guard let data = self.readOracleSlice() else {
             return nil
         }
-        if !self.skipRawBytesChunked() {  // lob locator (unused)
-            return nil
-        }
+        try self.throwingSkipRawBytesChunked()  // lob locator (unused)
         return data
     }
 }

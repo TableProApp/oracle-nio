@@ -59,6 +59,7 @@ struct OraclePartialDecodingError: Error {
         )
     }
 
+    @inlinable
     static func fieldNotDecodable(
         type: Any.Type, file: String = #fileID, line: Int = #line
     ) -> Self {
