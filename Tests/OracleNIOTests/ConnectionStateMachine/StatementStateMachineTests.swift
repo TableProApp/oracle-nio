@@ -553,6 +553,46 @@ import Testing
         #expect(cleanup.action == .close, sourceLocation: sourceLocation)
     }
 
+    /// The driver fetches a CLOB as LONG, so its cells carry LONG, but the column still reports
+    /// the type the server described.
+    @Test func lobColumnKeepsItsDescribedType() {
+        let promise = EmbeddedEventLoop().makePromise(of: OracleRowStream.self)
+        promise.fail(OracleSQLError.uncleanShutdown)  // we don't care about the error at all.
+        let queryContext = StatementContext(statement: "SELECT note FROM t", promise: promise)
+        let describeInfo = DescribeInfo(columns: [
+            .init(
+                name: "NOTE",
+                dataType: .clob,
+                dataTypeSize: 0,
+                precision: 0,
+                scale: 0,
+                bufferSize: 112,
+                nullsAllowed: true,
+                typeScheme: nil,
+                typeName: nil,
+                domainSchema: nil,
+                domainName: nil,
+                annotations: [:],
+                vectorDimensions: nil,
+                vectorFormat: nil
+            )
+        ])
+
+        var state = ConnectionStateMachine.readyForStatement()
+        _ = state.enqueue(task: .statement(queryContext))
+        #expect(state.describeInfoReceived(describeInfo) == .wait)
+        guard
+            case .sendExecute(_, let redefined?, _, requiresDefine: true, _) = state.backendErrorReceived(
+                .sendFetch)
+        else {
+            Issue.record("Expected the LOB column to be redefined")
+            return
+        }
+        #expect(redefined.columns[0].dataType == .long)
+        #expect(OracleColumn(underlying: redefined.columns[0]).dataType == .clob)
+        #expect(OracleColumn(underlying: describeInfo.columns[0]).dataType == .clob)
+    }
+
     private static let numberDescribeInfo = DescribeInfo(columns: [
         .init(
             name: "ID",

@@ -487,6 +487,7 @@ struct StatementStateMachine {
                                     return $0
                                 }
                                 var col = $0
+                                col.describedDataType = col.dataType
                                 if col.dataType == .blob {
                                     col.dataType = .longRAW
                                 } else if col.dataType == .clob {

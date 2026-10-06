@@ -82,6 +82,10 @@ struct DescribeInfo: OracleBackendMessage.PayloadDecodable, Sendable, Hashable {
         let vectorDimensions: UInt32?
         let vectorFormat: UInt8?
 
+        /// The type the server described, kept when the fetch redefines the column: a LOB is fetched
+        /// as LONG or LONG RAW, which `dataType` then holds because that is what its cells carry.
+        var describedDataType: OracleDataType? = nil
+
         static func decode(
             from buffer: inout ByteBuffer,
             context: OracleBackendMessageDecoder.Context
