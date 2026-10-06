@@ -262,7 +262,8 @@ internal enum OracleNumeric {
             return 0
 
         case .returnMagic:
-            return .init(pow(Double(-10), 126))
+            // Negative infinity has no integer, and converting -1e126 to one trapped.
+            throw OracleDecodingError.Code.failure
 
         case .continue(
             let digits,
@@ -291,16 +292,23 @@ internal enum OracleNumeric {
                 }
             }
 
-            var value: T = data.reduce(0) { partialResult, digit in
-                partialResult * 10 + T(digit)
+            if !isPositive && !(T.self is any SignedInteger.Type) {
+                throw OracleDecodingError.Code.signedIntegerFound
             }
 
-            if !isPositive {
-                if T.self is any SignedInteger.Type {
-                    value *= -1
-                } else {
-                    throw OracleDecodingError.Code.signedIntegerFound
+            // A NUMBER holds 38 digits, more than any integer type, and plain arithmetic trapped
+            // on the overflow. A negative value accumulates downwards so the type's minimum fits.
+            var value: T = 0
+            for digit in data {
+                let (shifted, shiftOverflow) = value.multipliedReportingOverflow(by: 10)
+                let (next, digitOverflow) =
+                    isPositive
+                    ? shifted.addingReportingOverflow(T(digit))
+                    : shifted.subtractingReportingOverflow(T(digit))
+                guard !shiftOverflow, !digitOverflow else {
+                    throw OracleDecodingError.Code.failure
                 }
+                value = next
             }
 
             if decimalPointIndex < numberOfDigits {
@@ -374,6 +382,41 @@ internal enum OracleNumeric {
             }
 
             return value
+        }
+    }
+
+    /// The value's exact decimal digits. A `Double` keeps about 15 of a NUMBER's 38.
+    @usableFromInline
+    static func parseDecimalString(from buffer: inout ByteBuffer) throws -> String {
+        switch try self.parsePartial(from: &buffer) {
+        case .return0:
+            return "0"
+
+        case .returnMagic:
+            return "-~"  // negative infinity, spelled as Oracle prints it
+
+        case .continue(
+            let digits,
+            let numberOfDigits,
+            let decimalPointIndex,
+            let isPositive
+        ):
+            let characters = digits.prefix(numberOfDigits).map { Character(Unicode.Scalar($0 + 48)) }
+            let pointIndex = Int(decimalPointIndex)
+            var text = isPositive ? "" : "-"
+            if pointIndex <= 0 {
+                text += "0."
+                text += String(repeating: "0", count: -pointIndex)
+                text += String(characters)
+            } else if pointIndex >= characters.count {
+                text += String(characters)
+                text += String(repeating: "0", count: pointIndex - characters.count)
+            } else {
+                text += String(characters[..<pointIndex])
+                text += "."
+                text += String(characters[pointIndex...])
+            }
+            return text
         }
     }
 
