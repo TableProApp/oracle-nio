@@ -18,7 +18,8 @@ import NIOCore
 
 struct StatementResult {
     enum Value: Equatable {
-        case noRows(affectedRows: Int, lastRowID: RowID?)
+        /// `columns` describes a query that returned no rows, which still has a shape.
+        case noRows(affectedRows: Int, lastRowID: RowID?, columns: [DescribeInfo.Column] = [])
         case describeInfo([DescribeInfo.Column])
     }
 
@@ -37,7 +38,7 @@ final class OracleRowStream: @unchecked Sendable {
 
     enum Source {
         case stream([DescribeInfo.Column], OracleRowsDataSource)
-        case noRows(Result<Void, Error>)
+        case noRows(Result<Void, Error>, columns: [DescribeInfo.Column] = [])
     }
 
     let eventLoop: EventLoop
@@ -171,11 +172,11 @@ final class OracleRowStream: @unchecked Sendable {
         case .stream(let rowDescription, let dataSource):
             self.rowDescription = rowDescription
             bufferState = .streaming(buffer: .init(), dataSource: dataSource)
-        case .noRows(.success):
-            self.rowDescription = []
+        case .noRows(.success, let columns):
+            self.rowDescription = columns
             bufferState = .finished(buffer: .init())
-        case .noRows(.failure(let error)):
-            self.rowDescription = []
+        case .noRows(.failure(let error), let columns):
+            self.rowDescription = columns
             bufferState = .failure(error)
         }
 

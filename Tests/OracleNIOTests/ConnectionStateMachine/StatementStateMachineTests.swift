@@ -553,6 +553,26 @@ import Testing
         #expect(cleanup.action == .close, sourceLocation: sourceLocation)
     }
 
+    /// Measured on Oracle 23ai: a query that matches no rows ends with ORA-01403 straight after its
+    /// describe. The result used to carry no columns at all.
+    @Test func emptyQueryKeepsItsColumns() {
+        let promise = EmbeddedEventLoop().makePromise(of: OracleRowStream.self)
+        promise.fail(OracleSQLError.uncleanShutdown)  // we don't care about the error at all.
+        let queryContext = StatementContext(statement: "SELECT id FROM t WHERE 1 = 0", promise: promise)
+
+        var state = ConnectionStateMachine.readyForStatement()
+        _ = state.enqueue(task: .statement(queryContext))
+        #expect(state.describeInfoReceived(Self.numberDescribeInfo) == .wait)
+        let expected = StatementResult(
+            value: .noRows(
+                affectedRows: BackendError.noData.rowCount,
+                lastRowID: nil,
+                columns: Self.numberDescribeInfo.columns
+            )
+        )
+        #expect(state.backendErrorReceived(.noData) == .succeedStatement(promise, expected))
+    }
+
     /// The driver fetches a CLOB as LONG, so its cells carry LONG, but the column still reports
     /// the type the server described.
     @Test func lobColumnKeepsItsDescribedType() {
