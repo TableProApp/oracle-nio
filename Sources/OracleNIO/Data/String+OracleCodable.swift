@@ -90,7 +90,7 @@ extension String: OracleDecodable {
                 }
                 self = String(decoding: utf16, as: UTF16.self)
             }
-        case .rowID:
+        case .rowID, .uRowID:
             self = try RowID(from: &buffer, type: type, context: context)
                 .description
         case .json:

@@ -94,6 +94,58 @@ public struct RowID: CustomStringConvertible, Sendable, Equatable, Hashable {
     }
 }
 
+extension RowID {
+    /// A universal rowid as Oracle spells it: a physical rowid in its 18-character form, and a
+    /// logical one, such as an index-organized table's, as `*` and the base64 of its bytes.
+    init(universal bytes: ByteBuffer) throws {
+        let view = Array(bytes.readableBytesView)
+        guard let kind = view.first else {
+            throw OraclePartialDecodingError.fieldNotDecodable(type: RowID.self)
+        }
+        if kind == 1 {
+            guard view.count >= 13 else {
+                throw OraclePartialDecodingError.fieldNotDecodable(type: RowID.self)
+            }
+            func integer<T: FixedWidthInteger>(at offset: Int, as: T.Type) -> T {
+                view[offset..<offset + MemoryLayout<T>.size].reduce(T.zero) { $0 << 8 | T($1) }
+            }
+            self.init(
+                Self.makeDescription(
+                    rba: integer(at: 1, as: UInt32.self),
+                    partitionID: integer(at: 5, as: UInt16.self),
+                    blockNumber: integer(at: 7, as: UInt32.self),
+                    slotNumber: integer(at: 11, as: UInt16.self)
+                ) ?? ""
+            )
+            return
+        }
+        self.init("*" + Self.unpaddedBase64(view.dropFirst()))
+    }
+
+    private static func unpaddedBase64(_ bytes: ArraySlice<UInt8>) -> String {
+        let alphabet = Constants.TNS_BASE64_ALPHABET_ARRAY
+        var output: [UInt8] = []
+        output.reserveCapacity((bytes.count * 4 + 2) / 3)
+        var index = bytes.startIndex
+        while index < bytes.endIndex {
+            let remaining = bytes.endIndex - index
+            let first = bytes[index]
+            let second = remaining > 1 ? bytes[index + 1] : 0
+            let third = remaining > 2 ? bytes[index + 2] : 0
+            output.append(alphabet[Int(first >> 2)])
+            output.append(alphabet[Int((first & 0x03) << 4 | second >> 4)])
+            if remaining > 1 {
+                output.append(alphabet[Int((second & 0x0f) << 2 | third >> 6)])
+            }
+            if remaining > 2 {
+                output.append(alphabet[Int(third & 0x3f)])
+            }
+            index += min(3, remaining)
+        }
+        return String(decoding: output, as: UTF8.self)
+    }
+}
+
 extension RowID: OracleDecodable {
     /// Since RowID is represented differently when received (either binary or b64 encoded string), we want to unify it here.
     init?(fromWire buffer: inout ByteBuffer) throws {
@@ -117,7 +169,7 @@ extension RowID: OracleDecodable {
         context: OracleDecodingContext
     ) throws {
         switch type {
-        case .rowID:
+        case .rowID, .uRowID:
             guard let value = buffer.readString(length: buffer.readableBytes) else {
                 throw OracleDecodingError.Code.missingData
             }

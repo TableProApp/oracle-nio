@@ -243,6 +243,81 @@ private typealias RowData = OracleBackendMessage.RowData
         #expect(buffer.readableBytes == 0)
     }
 
+    /// Measured on Oracle 23ai: a slice holding the rowid's length, then the rowid. A physical rowid
+    /// reads in its 18-character form, a logical one (an index-organized table's) as `*` and base64.
+    @Test func universalRowIDsDecode() throws {
+        let cases: [(wire: [UInt8], text: String)] = [
+            ([1, 13, 13, 1, 0, 1, 0x20, 0x1d, 0, 0x18, 0, 0, 1, 0xf4, 0, 0], "AAASAdAAYAAAAH0AAA"),
+            ([1, 10, 10, 2, 4, 6, 0, 1, 0xeb, 2, 0xc1, 2, 0xfe], "*BAYAAesCwQL+"),
+            ([1, 3, 3, 2, 4, 6], "*BAY"),
+            ([1, 2, 2, 2, 0xff], "*/w"),
+        ]
+        for testCase in cases {
+            var buffer = ByteBuffer(bytes: testCase.wire)
+            let row = try RowData.decode(from: &buffer, context: .init(columns: .uRowID))
+            var expected = ByteBuffer()
+            expected.writeInteger(UInt8(testCase.text.utf8.count))
+            expected.writeString(testCase.text)
+            #expect(row == .init(columns: [.data(expected)]))
+            #expect(buffer.readableBytes == 0)
+        }
+    }
+
+    @Test func nullUniversalRowIDIsOneByte() throws {
+        var buffer = ByteBuffer(bytes: [0])
+        let row = try RowData.decode(from: &buffer, context: .init(columns: .uRowID))
+        #expect(row == .init(columns: [.data(ByteBuffer(bytes: [0]))]))
+        #expect(buffer.readableBytes == 0)
+    }
+
+    /// A logical rowid of a long key is longer than one length byte can frame.
+    @Test func longUniversalRowIDDecodes() throws {
+        let data = [UInt8](repeating: 0x6b, count: 300)
+        var buffer = ByteBuffer(bytes: [2, 0x01, 0x2d])  // the length slice: 301
+        buffer.writeInteger(Constants.TNS_LONG_LENGTH_INDICATOR)
+        buffer.writeUB4(301)
+        buffer.writeInteger(UInt8(2))
+        buffer.writeBytes(data)
+        buffer.writeUB4(0)
+        let row = try RowData.decode(from: &buffer, context: .init(columns: .uRowID))
+        #expect(buffer.readableBytes == 0)
+        let text = "*" + String(repeating: "a2tr", count: 100)
+        let decoded = OracleRow(
+            lookupTable: [:],
+            data: DataRow(columnCount: 1, bytes: try Self.rowBytes(row)),
+            columns: [Self.column(.uRowID)]
+        )
+        for cell in decoded {
+            #expect(try cell.decode(String.self) == text)
+        }
+    }
+
+    @Test func universalRowIDSplitAcrossPacketsRequestsMoreData() {
+        var lengthOnly = ByteBuffer(bytes: [1, 13])
+        Self.expectNeedsMoreData(&lengthOnly, .uRowID)
+        var partialRowID = ByteBuffer(bytes: [1, 13, 13, 1, 0, 1])
+        Self.expectNeedsMoreData(&partialRowID, .uRowID)
+    }
+
+    private static func rowBytes(_ row: RowData) throws -> ByteBuffer {
+        var out = ByteBuffer()
+        for column in row.columns {
+            guard case .data(var bytes) = column else { throw TestError() }
+            out.writeBuffer(&bytes)
+        }
+        return out
+    }
+
+    private static func column(_ type: OracleDataType) -> DescribeInfo.Column {
+        .init(
+            name: "", dataType: type, dataTypeSize: 0, precision: 0, scale: 0, bufferSize: 1,
+            nullsAllowed: true, typeScheme: nil, typeName: nil, domainSchema: nil, domainName: nil,
+            annotations: [:], vectorDimensions: nil, vectorFormat: nil
+        )
+    }
+
+    private struct TestError: Error {}
+
     /// Either signal makes the decoder keep the message and retry it with the next packet.
     private static func expectNeedsMoreData(
         _ buffer: inout ByteBuffer,

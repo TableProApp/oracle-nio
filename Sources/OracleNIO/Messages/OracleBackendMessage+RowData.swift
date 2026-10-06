@@ -264,6 +264,20 @@ extension OracleBackendMessage {
                     return $0.writeImmutableBuffer(namedSlice)
                 }
                 columnValue.writeInteger(0, as: UInt32.self)  // chunk length of zero
+            case .uRowID:
+                if forBind {
+                    columnValue = Self.columnValue(text: try buffer.readString())
+                } else {
+                    // Measured on Oracle 23ai: a one-byte slice holding the length of the slice that
+                    // follows, which carries the rowid. A NULL is the first slice alone, empty.
+                    let lengthSlice = try buffer.throwingReadOracleSpecificLengthPrefixedSlice()
+                    if lengthSlice.readableBytes == 0 {
+                        columnValue = ByteBuffer(bytes: [0])  // NULL indicator
+                    } else {
+                        let rowID = try RowID(universal: buffer.throwingReadOracleSpecificLengthPrefixedSlice())
+                        columnValue = Self.columnValue(text: rowID.description)
+                    }
+                }
             default:
                 throw OraclePartialDecodingError.unsupportedDataType(
                     type: oracleType ?? .undefined
@@ -277,6 +291,22 @@ extension OracleBackendMessage {
             }
 
             return columnValue
+        }
+
+        /// A value in the row's own framing: a length byte, or chunks once it is too long for one.
+        private static func columnValue(text: String) -> ByteBuffer {
+            let bytes = Array(text.utf8)
+            var value = ByteBuffer()
+            if bytes.count <= Constants.TNS_MAX_SHORT_LENGTH {
+                value.writeInteger(UInt8(bytes.count))
+                value.writeBytes(bytes)
+            } else {
+                value.writeInteger(Constants.TNS_LONG_LENGTH_INDICATOR)
+                value.writeInteger(UInt32(bytes.count))
+                value.writeBytes(bytes)
+                value.writeInteger(UInt32(0))  // chunk length of zero
+            }
+            return value
         }
 
         private static func processBindRow(
