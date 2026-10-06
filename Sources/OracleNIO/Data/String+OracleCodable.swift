@@ -40,11 +40,16 @@ extension String: OracleEncodable {
     @inlinable
     public static var defaultOracleType: OracleDataType { .varchar }
 
+    /// The bind buffer is sized from this, so it has to count what goes on the wire: UTF-8 bytes.
+    /// Counting characters undersized any grapheme longer than four bytes (`👍🏽` is one character
+    /// and eight bytes, a family emoji is one character and 25 bytes), and the server refused the
+    /// bind with ORA-01460 or ORA-01461.
     @inlinable
     public var size: UInt32 {
         // empty strings have a length of 1
         // (they're basically the same as null in a oracle db)
-        .init(self.count >= 1 ? self.count : 1)
+        let byteCount = self.utf8.count
+        return .init(byteCount >= 1 ? byteCount : 1)
     }
 }
 

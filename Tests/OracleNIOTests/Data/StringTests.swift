@@ -30,4 +30,19 @@ import Testing
         let value = try String._decodeRaw(from: &buffer, type: .nVarchar, context: .default)
         #expect(value == "Hello, world! 🌍👋")
     }
+
+    /// Measured on Oracle 23ai: a bind sized by character count fails with ORA-01460 or ORA-01461
+    /// once one character takes more than four bytes.
+    @Test func bindSizeIsTheUTF8ByteCount() {
+        let cases: [(value: String, bytes: UInt32)] = [
+            ("👍🏽", 8),
+            ("🇻🇳", 8),
+            ("x\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}y", 27),
+            ("Tiếng Việt", 14),
+            ("", 1),
+        ]
+        for testCase in cases {
+            #expect(testCase.value.size == testCase.bytes, "\(testCase.value)")
+        }
+    }
 }
