@@ -354,6 +354,12 @@ struct StatementStateMachine {
 
             case .initialized(let context),
                 .describeInfoReceived(let context, _):
+                // A query that matched no rows ends here, before any row header, and its describe
+                // is the only place its columns are known.
+                var columns: [DescribeInfo.Column] = []
+                if case .describeInfoReceived(_, let describeInfo) = self.state {
+                    columns = describeInfo.columns
+                }
                 self.avoidingStateMachineCoWVoid { state in
                     state = .commandComplete
                 }
@@ -368,7 +374,8 @@ struct StatementStateMachine {
                     action = .succeedStatement(
                         promise,
                         .init(
-                            value: .noRows(affectedRows: error.rowCount, lastRowID: error.rowID),
+                            value: .noRows(
+                                affectedRows: error.rowCount, lastRowID: error.rowID, columns: columns),
                             logger: context.logger,
                             batchErrors: batchErrors,
                             rowCounts: nil,
@@ -487,6 +494,7 @@ struct StatementStateMachine {
                                     return $0
                                 }
                                 var col = $0
+                                col.describedDataType = col.dataType
                                 if col.dataType == .blob {
                                     col.dataType = .longRAW
                                 } else if col.dataType == .clob {

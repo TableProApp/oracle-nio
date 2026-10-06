@@ -455,7 +455,12 @@ func _decodeOracleVectorMetadata(from buffer: inout ByteBuffer) throws -> (
     if (flags & Constants.TNS_VECTOR_FLAG_NORM_RESERVED) != 0
         || (flags & Constants.TNS_VECTOR_FLAG_NORM) != 0
     {
-        buffer.moveReaderIndex(forwardBy: 8)
+        try buffer.throwingMoveReaderIndex(forwardBy: 8)
+    }
+
+    // Every element takes at least a byte, and the count sizes an allocation before any element is read.
+    guard elementsCount <= buffer.readableBytes else {
+        throw OracleDecodingError.Code.missingData
     }
 
     return (vectorFormat, elementsCount)

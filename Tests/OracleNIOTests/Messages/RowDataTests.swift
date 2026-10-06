@@ -243,6 +243,121 @@ private typealias RowData = OracleBackendMessage.RowData
         #expect(buffer.readableBytes == 0)
     }
 
+    /// Measured on Oracle 23ai: a slice holding the rowid's length, then the rowid. A physical rowid
+    /// reads in its 18-character form, a logical one (an index-organized table's) as `*` and base64.
+    @Test func universalRowIDsDecode() throws {
+        let cases: [(wire: [UInt8], text: String)] = [
+            ([1, 13, 13, 1, 0, 1, 0x20, 0x1d, 0, 0x18, 0, 0, 1, 0xf4, 0, 0], "AAASAdAAYAAAAH0AAA"),
+            ([1, 10, 10, 2, 4, 6, 0, 1, 0xeb, 2, 0xc1, 2, 0xfe], "*BAYAAesCwQL+"),
+            ([1, 3, 3, 2, 4, 6], "*BAY"),
+            ([1, 2, 2, 2, 0xff], "*/w"),
+        ]
+        for testCase in cases {
+            var buffer = ByteBuffer(bytes: testCase.wire)
+            let row = try RowData.decode(from: &buffer, context: .init(columns: .uRowID))
+            var expected = ByteBuffer()
+            expected.writeInteger(UInt8(testCase.text.utf8.count))
+            expected.writeString(testCase.text)
+            #expect(row == .init(columns: [.data(expected)]))
+            #expect(buffer.readableBytes == 0)
+        }
+    }
+
+    /// Measured on Oracle 23ai: a REF column is described with type 111 and its value is one
+    /// length-prefixed slice. Both used to fail, the describe with `oracleTypeNotSupported`.
+    @Test func refColumnIsReadPast() throws {
+        #expect(try OracleDataType.fromORATypeAndCSFRM(typeNumber: 111, csfrm: 0) == .ref)
+        let reference: [UInt8] = [0, 0x22, 2, 8] + [UInt8](repeating: 0x5d, count: 32)
+        var buffer = ByteBuffer(bytes: [UInt8(reference.count)] + reference + [3, 0x6f, 0x6e, 0x65])
+        let row = try RowData.decode(from: &buffer, context: .init(columns: .ref, .varchar))
+        #expect(
+            row
+                == .init(columns: [
+                    .data(ByteBuffer(bytes: [UInt8(reference.count)] + reference)),
+                    .data(ByteBuffer(bytes: [3, 0x6f, 0x6e, 0x65])),
+                ]))
+        #expect(buffer.readableBytes == 0)
+
+        var null = ByteBuffer(bytes: [0, 3, 0x74, 0x77, 0x6f])
+        let nullRow = try RowData.decode(from: &null, context: .init(columns: .ref, .varchar))
+        #expect(nullRow == .init(columns: [.data(ByteBuffer(bytes: [0])), .data(ByteBuffer(bytes: [3, 0x74, 0x77, 0x6f]))]))
+    }
+
+    /// Measured on Oracle 23ai: `BFILENAME('DATA_PUMP_DIR', 'x.bin')`. The locator used to be
+    /// skipped and the value written as NULL.
+    @Test func bfileKeepsItsLocator() throws {
+        let locator: [UInt8] =
+            [0x00, 0x24, 0x00, 0x01, 0x08, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00]
+            + [0x00, 0x0d] + Array("DATA_PUMP_DIR".utf8) + [0x00, 0x05] + Array("x.bin".utf8)
+        var buffer = ByteBuffer(bytes: [1, UInt8(locator.count), UInt8(locator.count)] + locator)
+        let row = try RowData.decode(from: &buffer, context: .init(columns: .bFile))
+        #expect(row == .init(columns: [.data(ByteBuffer(bytes: [UInt8(locator.count)] + locator))]))
+        #expect(buffer.readableBytes == 0)
+
+        var cellBytes: ByteBuffer? = ByteBuffer(bytes: locator)
+        let file = try OracleBFile._decodeRaw(from: &cellBytes, type: .bFile, context: .default)
+        #expect(file == OracleBFile(directory: "DATA_PUMP_DIR", fileName: "x.bin"))
+
+        var null = ByteBuffer(bytes: [0])
+        let nullRow = try RowData.decode(from: &null, context: .init(columns: .bFile))
+        #expect(nullRow == .init(columns: [.data(ByteBuffer(bytes: [0]))]))
+    }
+
+    @Test func nullUniversalRowIDIsOneByte() throws {
+        var buffer = ByteBuffer(bytes: [0])
+        let row = try RowData.decode(from: &buffer, context: .init(columns: .uRowID))
+        #expect(row == .init(columns: [.data(ByteBuffer(bytes: [0]))]))
+        #expect(buffer.readableBytes == 0)
+    }
+
+    /// A logical rowid of a long key is longer than one length byte can frame.
+    @Test func longUniversalRowIDDecodes() throws {
+        let data = [UInt8](repeating: 0x6b, count: 300)
+        var buffer = ByteBuffer(bytes: [2, 0x01, 0x2d])  // the length slice: 301
+        buffer.writeInteger(Constants.TNS_LONG_LENGTH_INDICATOR)
+        buffer.writeUB4(301)
+        buffer.writeInteger(UInt8(2))
+        buffer.writeBytes(data)
+        buffer.writeUB4(0)
+        let row = try RowData.decode(from: &buffer, context: .init(columns: .uRowID))
+        #expect(buffer.readableBytes == 0)
+        let text = "*" + String(repeating: "a2tr", count: 100)
+        let decoded = OracleRow(
+            lookupTable: [:],
+            data: DataRow(columnCount: 1, bytes: try Self.rowBytes(row)),
+            columns: [Self.column(.uRowID)]
+        )
+        for cell in decoded {
+            #expect(try cell.decode(String.self) == text)
+        }
+    }
+
+    @Test func universalRowIDSplitAcrossPacketsRequestsMoreData() {
+        var lengthOnly = ByteBuffer(bytes: [1, 13])
+        Self.expectNeedsMoreData(&lengthOnly, .uRowID)
+        var partialRowID = ByteBuffer(bytes: [1, 13, 13, 1, 0, 1])
+        Self.expectNeedsMoreData(&partialRowID, .uRowID)
+    }
+
+    private static func rowBytes(_ row: RowData) throws -> ByteBuffer {
+        var out = ByteBuffer()
+        for column in row.columns {
+            guard case .data(var bytes) = column else { throw TestError() }
+            out.writeBuffer(&bytes)
+        }
+        return out
+    }
+
+    private static func column(_ type: OracleDataType) -> DescribeInfo.Column {
+        .init(
+            name: "", dataType: type, dataTypeSize: 0, precision: 0, scale: 0, bufferSize: 1,
+            nullsAllowed: true, typeScheme: nil, typeName: nil, domainSchema: nil, domainName: nil,
+            annotations: [:], vectorDimensions: nil, vectorFormat: nil
+        )
+    }
+
+    private struct TestError: Error {}
+
     /// Either signal makes the decoder keep the message and retry it with the next packet.
     private static func expectNeedsMoreData(
         _ buffer: inout ByteBuffer,

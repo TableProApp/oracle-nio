@@ -149,6 +149,7 @@ enum Constants {
     static let TNS_LOB_LOCATOR_OFFSET_FLAG_1 = 4
     static let TNS_LOB_LOCATOR_OFFSET_FLAG_3 = 6
     static let TNS_LOB_LOCATOR_OFFSET_FLAG_4 = 7
+    static let TNS_LOB_LOCATOR_FIXED_OFFSET = 16
     static let TNS_LOB_QLOCATOR_VERSION: UInt16 = 4
     static let TNS_LOB_LOCATOR_VAR_LENGTH_CHARSET: UInt8 = 0x80
 

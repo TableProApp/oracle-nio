@@ -45,9 +45,11 @@ public struct OracleNumber:
     internal let value: ByteBuffer
     public let doubleValue: Double
 
+    /// The exact digits, which `doubleValue` cannot hold past about 15 of them.
     @inlinable
     public var description: String {
-        self.doubleValue.description
+        var bytes = self.value
+        return (try? OracleNumeric.parseDecimalString(from: &bytes)) ?? self.doubleValue.description
     }
 
     @inlinable

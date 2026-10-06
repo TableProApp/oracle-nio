@@ -28,15 +28,57 @@ struct OracleJSONParser {
     var treeSegPosition = 0
     var relativeOffsets = false
 
-    private init() {}
+    /// Every size and offset in OSON comes from the server, so the walk refuses what a well-formed tree never
+    /// holds instead of trapping or running away: a position outside the value, a container inside itself, nesting
+    /// deeper than Oracle stores (1,024 levels, measured on Oracle 23ai: ORA-40475 past it), and more work than
+    /// the value can stand for.
+    ///
+    /// Oracle shares a node among the children that hold the same value, scalars and containers alike (measured:
+    /// repeated strings, numbers and empty arrays point at one node), so a node reached twice is no fault. Sharing
+    /// can still multiply a few kilobytes into gigabytes, which is what the work limit stops.
+    static let maxDepth = 1_024
+
+    /// Generous next to what sharing gives real values, and far below what it gives a hostile one.
+    static func workLimit(forValueOfSize byteCount: Int) -> Int {
+        max(64 * 1_024 * 1_024, byteCount.multipliedReportingOverflow(by: 16).partialValue)
+    }
+
+    init() {}
 
     @usableFromInline
     static func parse(from buffer: inout ByteBuffer) throws -> OracleJSONStorage {
         var parser = OracleJSONParser()
-        return try parser.decode(from: &buffer)
+        try parser.readHeader(from: &buffer)
+        return try parser.decodeValue(from: &buffer)
     }
 
-    private mutating func decode(from buffer: inout ByteBuffer) throws -> OracleJSONStorage {
+    /// Moves to a position the value's own bytes gave, which may lie anywhere.
+    static func move(_ buffer: inout ByteBuffer, to position: Int) throws {
+        guard position >= 0, position <= buffer.writerIndex else {
+            throw OracleError.ErrorType.unexpectedData
+        }
+        buffer.moveReaderIndex(to: position)
+    }
+
+    static func checkDepth(_ depth: Int) throws {
+        guard depth <= Self.maxDepth else {
+            throw OracleError.ErrorType.unexpectedData
+        }
+    }
+
+    static func isContainer(_ nodeType: UInt8) -> Bool {
+        nodeType & 0x80 != 0
+    }
+
+    /// A container reached again while it is still open contains itself, which a tree never does.
+    static func checkNotOpen(_ cursor: ChildCursor, in open: [ChildCursor]) throws {
+        guard !open.contains(where: { $0.position == cursor.position }) else {
+            throw OracleError.ErrorType.unexpectedData
+        }
+    }
+
+    /// Reads everything before the root node and leaves `buffer` on it.
+    mutating func readHeader(from buffer: inout ByteBuffer) throws {
 
         // Parse root header
         let header = try buffer.throwingReadMultipleIntegers(as: (UInt8, UInt8, UInt8).self)
@@ -58,11 +100,11 @@ struct OracleJSONParser {
         self.relativeOffsets = self.flags & Constants.TNS_JSON_FLAG_REL_OFFSET_MODE != 0
         if self.flags & Constants.TNS_JSON_FLAG_IS_SCALAR != 0 {
             if self.flags & Constants.TNS_JSON_FLAG_TREE_SEG_UINT32 != 0 {
-                buffer.moveReaderIndex(forwardBy: 4)
+                try buffer.throwingMoveReaderIndex(forwardBy: 4)
             } else {
-                buffer.moveReaderIndex(forwardBy: 2)
+                try buffer.throwingMoveReaderIndex(forwardBy: 2)
             }
-            return try decodeNode(from: &buffer)
+            return
         }
 
         // determine the number of field names
@@ -109,13 +151,13 @@ struct OracleJSONParser {
 
         // determine the size of the tree segment - unused
         if self.flags & Constants.TNS_JSON_FLAG_TREE_SEG_UINT32 != 0 {
-            buffer.moveReaderIndex(forwardBy: MemoryLayout<UInt32>.size)
+            try buffer.throwingMoveReaderIndex(forwardBy: MemoryLayout<UInt32>.size)
         } else {
-            buffer.moveReaderIndex(forwardBy: MemoryLayout<UInt16>.size)
+            try buffer.throwingMoveReaderIndex(forwardBy: MemoryLayout<UInt16>.size)
         }
 
         // determine the number of "tiny" nodes - unused
-        buffer.moveReaderIndex(forwardBy: MemoryLayout<UInt16>.size)
+        try buffer.throwingMoveReaderIndex(forwardBy: MemoryLayout<UInt16>.size)
 
         // if there are any short names, read them now
         if shortFieldNamesCount > 0 {
@@ -139,8 +181,6 @@ struct OracleJSONParser {
 
         // get tree segment
         self.treeSegPosition = buffer.readerIndex
-
-        return try decodeNode(from: &buffer)
     }
 
     mutating func getShortFieldNames(
@@ -150,16 +190,16 @@ struct OracleJSONParser {
         segmentSize: Int
     ) throws {
         // skip the hash id array (1 byte for each field)
-        buffer.moveReaderIndex(forwardBy: fieldsCount)
+        try buffer.throwingMoveReaderIndex(forwardBy: fieldsCount)
 
         // skip the field name offsets array for now
         let offsetsPosition = buffer.readerIndex
-        buffer.moveReaderIndex(forwardBy: fieldsCount * offsetsSize)
+        try buffer.throwingMoveReaderIndex(forwardBy: fieldsCount * offsetsSize)
         let slice = try buffer.throwingReadSlice(length: segmentSize)
         let finalPosition = buffer.readerIndex
 
         // determine the names of the fields
-        buffer.moveReaderIndex(to: offsetsPosition)
+        try Self.move(&buffer, to: offsetsPosition)
         self.fieldNames.reserveCapacity(fieldsCount)
         for _ in 0..<fieldsCount {
             let offset =
@@ -174,7 +214,7 @@ struct OracleJSONParser {
                 at: offset + MemoryLayout<UInt8>.size, length: length)
             self.fieldNames.append(name)
         }
-        buffer.moveReaderIndex(to: finalPosition)
+        try Self.move(&buffer, to: finalPosition)
     }
 
     mutating func getLongFieldNames(
@@ -184,10 +224,10 @@ struct OracleJSONParser {
         segmentSize: Int
     ) throws {
         // skip the hash id array (2 bytes for each field)
-        buffer.moveReaderIndex(forwardBy: fieldsCount * 2)
+        try buffer.throwingMoveReaderIndex(forwardBy: fieldsCount * 2)
 
         // skip the field name offsets array for now
-        buffer.moveReaderIndex(forwardBy: fieldsCount * offsetsSize)
+        try buffer.throwingMoveReaderIndex(forwardBy: fieldsCount * offsetsSize)
         var slice = try buffer.throwingReadSlice(length: segmentSize)
 
         // determine the names of the fields
@@ -199,12 +239,71 @@ struct OracleJSONParser {
         }
     }
 
-    private mutating func decodeNode(from buffer: inout ByteBuffer) throws -> OracleJSONStorage {
-        let nodeType = try buffer.throwingReadInteger(as: UInt8.self)
-        if nodeType & 0x80 != 0 {
-            return try decodeContainerNode(from: &buffer, ofType: nodeType)
+    /// Walks the tree with a stack of its own rather than recursion: nesting Oracle accepts overflows the stack
+    /// a task runs on.
+    private func decodeValue(from buffer: inout ByteBuffer) throws -> OracleJSONStorage {
+        let workLimit = Self.workLimit(forValueOfSize: buffer.writerIndex)
+        let rootType = try buffer.throwingReadInteger(as: UInt8.self)
+        guard Self.isContainer(rootType) else {
+            return try self.decodeScalar(rootType, from: &buffer)
+        }
+        var stack = [PartialContainer(cursor: try self.openContainer(ofType: rootType, in: &buffer))]
+        var work = 0
+        while let top = stack.indices.last {
+            if let child = try self.nextChild(of: &stack[top].cursor, in: &buffer) {
+                let nodeStart = buffer.readerIndex
+                let nodeType = try buffer.throwingReadInteger(as: UInt8.self)
+                if Self.isContainer(nodeType) {
+                    try Self.checkDepth(stack.count + 1)
+                    let cursor = try self.openContainer(ofType: nodeType, in: &buffer)
+                    try Self.checkNotOpen(cursor, in: stack.map(\.cursor))
+                    stack[top].pendingName = child.name
+                    stack.append(PartialContainer(cursor: cursor))
+                } else {
+                    stack[top].add(try self.decodeScalar(nodeType, from: &buffer), named: child.name)
+                }
+                work += max(1, buffer.readerIndex - nodeStart)
+                guard work <= workLimit else {
+                    throw OracleError.ErrorType.unexpectedData
+                }
+                continue
+            }
+            let finished = stack.removeLast().storage
+            guard let parent = stack.indices.last else {
+                return finished
+            }
+            let name = stack[parent].pendingName
+            stack[parent].add(finished, named: name)
+        }
+        throw OracleError.ErrorType.unexpectedData
+    }
+
+    private struct PartialContainer {
+        var cursor: ChildCursor
+        var dictionary: [String: OracleJSONStorage] = [:]
+        var array: [OracleJSONStorage] = []
+        /// The field name of the child container being decoded, until it is finished.
+        var pendingName: String?
+
+        init(cursor: ChildCursor) {
+            self.cursor = cursor
         }
 
+        mutating func add(_ value: OracleJSONStorage, named name: String?) {
+            if self.cursor.isObject {
+                guard let name else { return }
+                self.dictionary[name] = value
+            } else {
+                self.array.append(value)
+            }
+        }
+
+        var storage: OracleJSONStorage {
+            self.cursor.isObject ? .container(self.dictionary) : .array(self.array)
+        }
+    }
+
+    private func decodeScalar(_ nodeType: UInt8, from buffer: inout ByteBuffer) throws -> OracleJSONStorage {
         var bytes: ByteBuffer
         switch nodeType {
         case Constants.TNS_JSON_TYPE_NULL:
@@ -330,27 +429,46 @@ struct OracleJSONParser {
         throw OracleError.ErrorType.osonNodeTypeNotSupported
     }
 
-    private mutating func decodeContainerNode(from buffer: inout ByteBuffer, ofType nodeType: UInt8)
-        throws -> OracleJSONStorage
-    {
-        let isObject = nodeType & 0x40 == 0
+    static func isObject(_ nodeType: UInt8) -> Bool {
+        nodeType & 0x40 == 0
+    }
+
+    /// Where a container's walk through its children stands.
+    struct ChildCursor {
+        /// Where the container's node starts in the value.
+        let position: Int
+        let nodeType: UInt8
+        let isObject: Bool
+        let containerOffset: Int
+        var remaining: UInt32
+        var fieldIDsPosition: Int
+        var offsetPosition: Int
+    }
+
+    struct Child {
+        /// The field name, `nil` for an array element.
+        let name: String?
+    }
+
+    /// Reads a container's header, with `buffer` just past its node type.
+    func openContainer(ofType nodeType: UInt8, in buffer: inout ByteBuffer) throws -> ChildCursor {
+        let isObject = Self.isObject(nodeType)
 
         // determine the number of children by examining the 4th and 5th most
         // significant bits of the node type; determine the offsets in the tree
         // segment to the field ids array and the value offsets array
-        let containerOffset = buffer.readerIndex - self.treeSegPosition - 1
+        let position = buffer.readerIndex - 1
+        let containerOffset = position - self.treeSegPosition
         var (numberOfChildren, isShared) = try self.getNumberOfChildren(
             from: &buffer,
             nodeType: nodeType
         )
-        var offsetPosition: Int
-        var fieldIDsPosition: Int
-        var value: OracleJSONStorage
+        let offsetPosition: Int
+        let fieldIDsPosition: Int
         if isShared {
-            value = .container([:])
             let offset = try self.getOffset(from: &buffer, nodeType: nodeType)
             offsetPosition = buffer.readerIndex
-            buffer.moveReaderIndex(to: self.treeSegPosition + Int(offset))
+            try Self.move(&buffer, to: self.treeSegPosition + Int(offset))
             let temp8 = try buffer.throwingReadInteger(as: UInt8.self)
             (numberOfChildren, isShared) = try self.getNumberOfChildren(
                 from: &buffer,
@@ -358,56 +476,58 @@ struct OracleJSONParser {
             )
             fieldIDsPosition = buffer.readerIndex
         } else if isObject {
-            value = .container([:])
             fieldIDsPosition = buffer.readerIndex
             offsetPosition = buffer.readerIndex + self.fieldIDLength * Int(numberOfChildren)
         } else {
             fieldIDsPosition = 0
-            value = .array(.init(repeating: .none, count: Int(numberOfChildren)))
             offsetPosition = buffer.readerIndex
         }
+        return ChildCursor(
+            position: position,
+            nodeType: nodeType,
+            isObject: isObject,
+            containerOffset: containerOffset,
+            remaining: numberOfChildren,
+            fieldIDsPosition: fieldIDsPosition,
+            offsetPosition: offsetPosition
+        )
+    }
 
-        // process each of the children
-        for i in 0..<numberOfChildren {
-            let name: String?
-            if isObject {
-                buffer.moveReaderIndex(to: fieldIDsPosition)
-                let index =
-                    if self.fieldIDLength == 1 {
-                        try Int(buffer.throwingReadInteger(as: UInt8.self))
-                    } else if self.fieldIDLength == 2 {
-                        try Int(buffer.throwingReadInteger(as: UInt16.self))
-                    } else {
-                        try Int(buffer.throwingReadInteger(as: UInt32.self))
-                    }
-                name = self.fieldNames[index - 1]
-                fieldIDsPosition = buffer.readerIndex
-            } else {
-                name = nil
-            }
-            buffer.moveReaderIndex(to: offsetPosition)
-            var offset = try Int(self.getOffset(from: &buffer, nodeType: nodeType))
-            if self.relativeOffsets {
-                offset += containerOffset
-            }
-            offsetPosition = buffer.readerIndex
-            buffer.moveReaderIndex(to: self.treeSegPosition + offset)
-            switch value {
-            case .container(var dictionary):
-                guard let name else { continue }
-                dictionary[name] = try self.decodeNode(from: &buffer)
-                value = .none  // no CoW
-                value = .container(dictionary)
-            case .array(var array):
-                array[Int(i)] = try self.decodeNode(from: &buffer)
-                value = .none  // no CoW
-                value = .array(array)
-            default:
-                preconditionFailure()
-            }
+    /// Moves `buffer` onto the container's next child, in the order the tree stores them, or answers `nil` once
+    /// every child has been visited.
+    func nextChild(of cursor: inout ChildCursor, in buffer: inout ByteBuffer) throws -> Child? {
+        guard cursor.remaining > 0 else {
+            return nil
         }
+        cursor.remaining -= 1
 
-        return value
+        let name: String?
+        if cursor.isObject {
+            try Self.move(&buffer, to: cursor.fieldIDsPosition)
+            let index =
+                if self.fieldIDLength == 1 {
+                    try Int(buffer.throwingReadInteger(as: UInt8.self))
+                } else if self.fieldIDLength == 2 {
+                    try Int(buffer.throwingReadInteger(as: UInt16.self))
+                } else {
+                    try Int(buffer.throwingReadInteger(as: UInt32.self))
+                }
+            guard self.fieldNames.indices.contains(index - 1) else {
+                throw OracleError.ErrorType.unexpectedData
+            }
+            name = self.fieldNames[index - 1]
+            cursor.fieldIDsPosition = buffer.readerIndex
+        } else {
+            name = nil
+        }
+        try Self.move(&buffer, to: cursor.offsetPosition)
+        var offset = try Int(self.getOffset(from: &buffer, nodeType: cursor.nodeType))
+        if self.relativeOffsets {
+            offset += cursor.containerOffset
+        }
+        cursor.offsetPosition = buffer.readerIndex
+        try Self.move(&buffer, to: self.treeSegPosition + offset)
+        return Child(name: name)
     }
 
     /// Return the number of children the container has. This is determined by
@@ -421,7 +541,7 @@ struct OracleJSONParser {
     /// In the latter case the flag is_shared is set and the number of children
     /// is read by the caller instead as it must examine the offset and then
     /// retain the location for later use.
-    mutating func getNumberOfChildren(
+    func getNumberOfChildren(
         from buffer: inout ByteBuffer,
         nodeType: UInt8
     ) throws -> (numberOfChildren: UInt32, isShared: Bool) {
@@ -444,7 +564,7 @@ struct OracleJSONParser {
 
     /// Return an offset. The offset will be either a 16-bit or 32-bit value
     /// depending on the value of the 3rd significant bit of the node type.
-    mutating func getOffset(from buffer: inout ByteBuffer, nodeType: UInt8) throws -> UInt32 {
+    func getOffset(from buffer: inout ByteBuffer, nodeType: UInt8) throws -> UInt32 {
         if nodeType & 0x20 != 0 {
             return try buffer.throwingReadInteger(as: UInt32.self)
         }

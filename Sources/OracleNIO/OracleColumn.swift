@@ -18,6 +18,23 @@ public struct OracleColumn: Hashable, Sendable {
 
     /// The field name.
     public var name: String { self.underlying.name }
+
+    /// The type the server described for the column. A CLOB, NCLOB or BLOB reports its own type
+    /// here although its cells arrive as LONG, LONG NVARCHAR or LONG RAW, which is how the driver
+    /// fetches it.
+    public var dataType: OracleDataType {
+        self.underlying.describedDataType ?? self.underlying.dataType
+    }
+
+    /// The number of significant digits of a `NUMBER` or `FLOAT`, 0 when the column declares none.
+    public var precision: Int { Int(self.underlying.precision) }
+
+    /// The digits after the decimal point of a `NUMBER`, or the fractional-second digits of a
+    /// `TIMESTAMP` or `INTERVAL DAY TO SECOND`.
+    public var scale: Int { Int(self.underlying.scale) }
+
+    /// Whether the column may hold NULL.
+    public var isNullable: Bool { self.underlying.nullsAllowed }
 }
 
 public struct OracleColumns: Sequence {

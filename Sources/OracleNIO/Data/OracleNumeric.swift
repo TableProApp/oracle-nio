@@ -23,6 +23,7 @@ import NIOCore
 #endif
 
 private let numberMaxDigits = 40
+private let numberMaxBytes = 22
 private let numberAsSingleChars = 172
 
 extension SignedInteger {
@@ -262,7 +263,8 @@ internal enum OracleNumeric {
             return 0
 
         case .returnMagic:
-            return .init(pow(Double(-10), 126))
+            // Negative infinity has no integer, and converting -1e126 to one trapped.
+            throw OracleDecodingError.Code.failure
 
         case .continue(
             let digits,
@@ -291,16 +293,23 @@ internal enum OracleNumeric {
                 }
             }
 
-            var value: T = data.reduce(0) { partialResult, digit in
-                partialResult * 10 + T(digit)
+            if !isPositive && !(T.self is any SignedInteger.Type) {
+                throw OracleDecodingError.Code.signedIntegerFound
             }
 
-            if !isPositive {
-                if T.self is any SignedInteger.Type {
-                    value *= -1
-                } else {
-                    throw OracleDecodingError.Code.signedIntegerFound
+            // A NUMBER holds 38 digits, more than any integer type, and plain arithmetic trapped
+            // on the overflow. A negative value accumulates downwards so the type's minimum fits.
+            var value: T = 0
+            for digit in data {
+                let (shifted, shiftOverflow) = value.multipliedReportingOverflow(by: 10)
+                let (next, digitOverflow) =
+                    isPositive
+                    ? shifted.addingReportingOverflow(T(digit))
+                    : shifted.subtractingReportingOverflow(T(digit))
+                guard !shiftOverflow, !digitOverflow else {
+                    throw OracleDecodingError.Code.failure
                 }
+                value = next
             }
 
             if decimalPointIndex < numberOfDigits {
@@ -377,6 +386,41 @@ internal enum OracleNumeric {
         }
     }
 
+    /// The value's exact decimal digits. A `Double` keeps about 15 of a NUMBER's 38.
+    @usableFromInline
+    static func parseDecimalString(from buffer: inout ByteBuffer) throws -> String {
+        switch try self.parsePartial(from: &buffer) {
+        case .return0:
+            return "0"
+
+        case .returnMagic:
+            return "-~"  // negative infinity, spelled as Oracle prints it
+
+        case .continue(
+            let digits,
+            let numberOfDigits,
+            let decimalPointIndex,
+            let isPositive
+        ):
+            let characters = digits.prefix(numberOfDigits).map { Character(Unicode.Scalar($0 + 48)) }
+            let pointIndex = Int(decimalPointIndex)
+            var text = isPositive ? "" : "-"
+            if pointIndex <= 0 {
+                text += "0."
+                text += String(repeating: "0", count: -pointIndex)
+                text += String(characters)
+            } else if pointIndex >= characters.count {
+                text += String(characters)
+                text += String(repeating: "0", count: pointIndex - characters.count)
+            } else {
+                text += String(characters[..<pointIndex])
+                text += "."
+                text += String(characters[pointIndex...])
+            }
+            return text
+        }
+    }
+
     @usableFromInline
     static func parseBinaryFloat(
         from buffer: inout ByteBuffer
@@ -433,6 +477,11 @@ internal enum OracleNumeric {
         from buffer: inout ByteBuffer
     ) throws -> PartialResult {
         var length = buffer.readableBytes
+        // A NUMBER is at most 22 bytes. A longer value is not one, and its leading zeros could run the decimal
+        // point index past Int16.
+        guard length <= numberMaxBytes else {
+            throw OracleDecodingError.Code.failure
+        }
         // the first byte is the exponent; positive numbers have the highest
         // order bit set, whereas negative numbers have the highest order bit
         // cleared and the bits inverted
@@ -472,14 +521,16 @@ internal enum OracleNumeric {
         for i in 1..<length {
             // positive numbers have 1 added to them; negative numbers are
             // subtracted from the value 101
-            guard var byte = buffer.getInteger(at: i, as: UInt8.self) else {
+            guard let wireByte = buffer.getInteger(at: i, as: UInt8.self) else {
                 throw OracleDecodingError.Code.missingData
             }
-            if isPositive {
-                byte -= 1
-            } else {
-                byte = 101 - byte
+            // A base-100 digit is sent as 1...100, or 101 minus it for a negative number; a byte outside that
+            // range is not a digit, and unsigned arithmetic trapped on it.
+            let digitValue = isPositive ? Int(wireByte) - 1 : 101 - Int(wireByte)
+            guard (0...100).contains(digitValue) else {
+                throw OracleDecodingError.Code.failure
             }
+            let byte = UInt8(digitValue)
 
             // process the first digit; leading zeroes are ignored
             var digit = byte / 10

@@ -89,14 +89,15 @@ extension IntervalDS: OracleEncodable {
         into buffer: inout ByteBuffer,
         context: OracleEncodingContext
     ) {
+        // Every part of a negative interval is negative, so each one is written below its bias.
         buffer.writeInteger(
-            UInt32(self.days) + Constants.TNS_DURATION_MID, endianness: .big
+            UInt32(bitPattern: Int32(self.days)) &+ Constants.TNS_DURATION_MID, endianness: .big
         )
-        buffer.writeInteger(UInt8(self.hours) + Constants.TNS_DURATION_OFFSET)
-        buffer.writeInteger(UInt8(self.minutes) + Constants.TNS_DURATION_OFFSET)
-        buffer.writeInteger(UInt8(self.seconds) + Constants.TNS_DURATION_OFFSET)
+        buffer.writeInteger(UInt8(Int(Constants.TNS_DURATION_OFFSET) + self.hours))
+        buffer.writeInteger(UInt8(Int(Constants.TNS_DURATION_OFFSET) + self.minutes))
+        buffer.writeInteger(UInt8(Int(Constants.TNS_DURATION_OFFSET) + self.seconds))
         buffer.writeInteger(
-            UInt32(self.fractionalSeconds) + Constants.TNS_DURATION_MID,
+            UInt32(bitPattern: Int32(self.fractionalSeconds)) &+ Constants.TNS_DURATION_MID,
             endianness: .big
         )
         buffer.writeInteger(UInt8(buffer.readableBytes))
@@ -112,21 +113,20 @@ extension IntervalDS: OracleDecodable {
     ) throws {
         switch type {
         case .intervalDS:
+            // A negative interval sends every part below its bias; unsigned subtraction trapped.
             let durationMid = Constants.TNS_DURATION_MID
-            let durationOffset = Constants.TNS_DURATION_OFFSET
-            let days = (buffer.readInteger(endianness: .big, as: UInt32.self) ?? 0) - durationMid
-            let fractionalSeconds =
-                try buffer.throwingGetInteger(at: 7, endianness: .big, as: UInt32.self)
-                - durationMid
-            let hours = try buffer.throwingGetInteger(at: 4, as: UInt8.self) - durationOffset
-            let minutes = try buffer.throwingGetInteger(at: 5, as: UInt8.self) - durationOffset
-            let seconds = try buffer.throwingGetInteger(at: 6, as: UInt8.self) - durationOffset
+            let durationOffset = Int(Constants.TNS_DURATION_OFFSET)
+            let days = try buffer.throwingReadInteger(endianness: .big, as: UInt32.self)
+            let hours = try buffer.throwingReadInteger(as: UInt8.self)
+            let minutes = try buffer.throwingReadInteger(as: UInt8.self)
+            let seconds = try buffer.throwingReadInteger(as: UInt8.self)
+            let fractionalSeconds = try buffer.throwingReadInteger(endianness: .big, as: UInt32.self)
             self = .init(
-                days: Int(days),
-                hours: Int(hours),
-                minutes: Int(minutes),
-                seconds: Int(seconds),
-                fractionalSeconds: Int(fractionalSeconds)
+                days: Int(Int32(bitPattern: days &- durationMid)),
+                hours: Int(hours) - durationOffset,
+                minutes: Int(minutes) - durationOffset,
+                seconds: Int(seconds) - durationOffset,
+                fractionalSeconds: Int(Int32(bitPattern: fractionalSeconds &- durationMid))
             )
         default:
             throw OracleDecodingError.Code.typeMismatch

@@ -55,8 +55,8 @@ extension Date: OracleEncodable {
         buffer.writeInteger(UInt8(components.minute! + 1))
         buffer.writeInteger(UInt8(components.second! + 1))
         if length > 7 {
-            let fractionalSeconds =
-                UInt32(components.nanosecond! / 1_000_000)
+            // The wire carries nanoseconds, not milliseconds.
+            let fractionalSeconds = UInt32(components.nanosecond!)
             if fractionalSeconds == 0 && length <= 11 {
                 length = 7
             } else {
@@ -66,12 +66,13 @@ extension Date: OracleEncodable {
             }
         }
         if length > 11 {
-            let seconds = currentCalendarTimeZone.secondsFromGMT()
+            let seconds = currentCalendarTimeZone.secondsFromGMT(for: self)
             let totalMinutes = seconds / 60
             let hours = totalMinutes / 60
             let minutes = totalMinutes % 60
-            buffer.writeInteger(UInt8(hours) + Constants.TZ_HOUR_OFFSET)
-            buffer.writeInteger(UInt8(minutes) + Constants.TZ_MINUTE_OFFSET)
+            // Both parts carry the offset's sign, so a zone west of UTC writes bytes below the bias.
+            buffer.writeInteger(UInt8(Int(Constants.TZ_HOUR_OFFSET) + hours))
+            buffer.writeInteger(UInt8(Int(Constants.TZ_MINUTE_OFFSET) + minutes))
         }
     }
 }
@@ -109,8 +110,9 @@ extension Date: OracleDecodable {
                     endianness: .big, as: UInt32.self
                 )
             {
-                let fsecond = Double(value) / pow(10, Double(String(value).count))
-                nanosecond = Int(fsecond * 1_000_000_000)
+                // The wire carries nanoseconds. Scaling by the digit count of the value read
+                // `.05` as `.5` and `.000001` as `.1`.
+                nanosecond = Int(value)
             }
 
             let (byte11, byte12) =
@@ -123,8 +125,9 @@ extension Date: OracleDecodable {
                     throw OracleDecodingError.Code.failure
                 }
 
-                let tzHour = Int(byte11 - Constants.TZ_HOUR_OFFSET)
-                let tzMinute = Int(byte12 - Constants.TZ_MINUTE_OFFSET)
+                // A zone west of UTC sends bytes below the bias, which UInt8 arithmetic trapped on.
+                let tzHour = Int(byte11) - Int(Constants.TZ_HOUR_OFFSET)
+                let tzMinute = Int(byte12) - Int(Constants.TZ_MINUTE_OFFSET)
                 if tzHour != 0 || tzMinute != 0 {
                     guard
                         let timeZone = TimeZone(
