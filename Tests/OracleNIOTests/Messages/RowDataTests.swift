@@ -283,6 +283,26 @@ private typealias RowData = OracleBackendMessage.RowData
         #expect(nullRow == .init(columns: [.data(ByteBuffer(bytes: [0])), .data(ByteBuffer(bytes: [3, 0x74, 0x77, 0x6f]))]))
     }
 
+    /// Measured on Oracle 23ai: `BFILENAME('DATA_PUMP_DIR', 'x.bin')`. The locator used to be
+    /// skipped and the value written as NULL.
+    @Test func bfileKeepsItsLocator() throws {
+        let locator: [UInt8] =
+            [0x00, 0x24, 0x00, 0x01, 0x08, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00]
+            + [0x00, 0x0d] + Array("DATA_PUMP_DIR".utf8) + [0x00, 0x05] + Array("x.bin".utf8)
+        var buffer = ByteBuffer(bytes: [1, UInt8(locator.count), UInt8(locator.count)] + locator)
+        let row = try RowData.decode(from: &buffer, context: .init(columns: .bFile))
+        #expect(row == .init(columns: [.data(ByteBuffer(bytes: [UInt8(locator.count)] + locator))]))
+        #expect(buffer.readableBytes == 0)
+
+        var cellBytes: ByteBuffer? = ByteBuffer(bytes: locator)
+        let file = try OracleBFile._decodeRaw(from: &cellBytes, type: .bFile, context: .default)
+        #expect(file == OracleBFile(directory: "DATA_PUMP_DIR", fileName: "x.bin"))
+
+        var null = ByteBuffer(bytes: [0])
+        let nullRow = try RowData.decode(from: &null, context: .init(columns: .bFile))
+        #expect(nullRow == .init(columns: [.data(ByteBuffer(bytes: [0]))]))
+    }
+
     @Test func nullUniversalRowIDIsOneByte() throws {
         var buffer = ByteBuffer(bytes: [0])
         let row = try RowData.decode(from: &buffer, context: .init(columns: .uRowID))

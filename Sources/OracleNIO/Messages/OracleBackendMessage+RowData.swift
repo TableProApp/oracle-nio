@@ -182,11 +182,19 @@ extension OracleBackendMessage {
                 }
                 columnValue.writeInteger(0, as: UInt32.self)  // chunk length of zero
             case .bfile:
+                // A BFILE carries only its locator, with no size or chunk size before it. Skipping
+                // the locator and writing NULL made every BFILE read as NULL.
                 let length = try buffer.throwingReadUB4()
                 if length > 0 {
-                    try buffer.throwingSkipRawBytesChunked()
+                    switch buffer.readOracleSlice() {
+                    case .some(let locator):
+                        columnValue = locator
+                    case .none:
+                        throw MissingDataDecodingError.Trigger()
+                    }
+                } else {
+                    columnValue = .init(bytes: [0])  // NULL indicator
                 }
-                columnValue = .init(bytes: [0])
             case .clob, .blob:
 
                 // LOB has a UB4 length indicator instead of the usual UInt8
