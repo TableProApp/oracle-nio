@@ -31,17 +31,56 @@ extension OracleJSONParser {
         var parser = OracleJSONParser()
         try parser.readHeader(from: &buffer)
         var text = ""
-        try parser.writeNode(from: &buffer, into: &text)
+        try parser.writeValue(from: &buffer, into: &text)
         return text
     }
 
-    private func writeNode(from buffer: inout ByteBuffer, into text: inout String) throws {
-        let nodeType = try buffer.throwingReadInteger(as: UInt8.self)
-        if nodeType & 0x80 != 0 {
-            try self.writeContainer(from: &buffer, ofType: nodeType, into: &text)
+    private struct OpenContainer {
+        var cursor: ChildCursor
+        var hasWrittenAChild = false
+    }
+
+    /// Walks the tree with a stack of its own rather than recursion: nesting Oracle accepts overflows the stack
+    /// a task runs on.
+    private func writeValue(from buffer: inout ByteBuffer, into text: inout String) throws {
+        let workLimit = Self.workLimit(forValueOfSize: buffer.writerIndex)
+        let rootType = try buffer.throwingReadInteger(as: UInt8.self)
+        guard Self.isContainer(rootType) else {
+            try self.writeScalar(rootType, from: &buffer, into: &text)
             return
         }
+        text += Self.isObject(rootType) ? "{" : "["
+        var stack = [OpenContainer(cursor: try self.openContainer(ofType: rootType, in: &buffer))]
+        while let top = stack.indices.last {
+            guard let child = try self.nextChild(of: &stack[top].cursor, in: &buffer) else {
+                text += stack.removeLast().cursor.isObject ? "}" : "]"
+                continue
+            }
+            if stack[top].hasWrittenAChild {
+                text += ","
+            }
+            stack[top].hasWrittenAChild = true
+            if let name = child.name {
+                Self.writeString(name, into: &text)
+                text += ":"
+            }
+            let nodeType = try buffer.throwingReadInteger(as: UInt8.self)
+            if Self.isContainer(nodeType) {
+                try Self.checkDepth(stack.count + 1)
+                let cursor = try self.openContainer(ofType: nodeType, in: &buffer)
+                try Self.checkNotOpen(cursor, in: stack.map(\.cursor))
+                text += Self.isObject(nodeType) ? "{" : "["
+                stack.append(OpenContainer(cursor: cursor))
+            } else {
+                try self.writeScalar(nodeType, from: &buffer, into: &text)
+            }
+            guard text.utf8.count <= workLimit else {
+                throw OracleError.ErrorType.unexpectedData
+            }
+        }
+    }
 
+    private func writeScalar(_ nodeType: UInt8, from buffer: inout ByteBuffer, into text: inout String) throws {
         switch nodeType {
         case Constants.TNS_JSON_TYPE_NULL:
             text += "null"
@@ -140,24 +179,6 @@ extension OracleJSONParser {
             values = try OracleVectorBinary._decodeActual(from: &slice, elements: elements).map { String($0) }
         }
         text += "[" + values.joined(separator: ",") + "]"
-    }
-
-    private func writeContainer(from buffer: inout ByteBuffer, ofType nodeType: UInt8, into text: inout String) throws {
-        let isObject = Self.isObject(nodeType)
-        text += isObject ? "{" : "["
-        var isFirst = true
-        try self.forEachChild(of: nodeType, in: &buffer) { name, child in
-            if !isFirst {
-                text += ","
-            }
-            isFirst = false
-            if let name {
-                Self.writeString(name, into: &text)
-                text += ":"
-            }
-            try self.writeNode(from: &child, into: &text)
-        }
-        text += isObject ? "}" : "]"
     }
 
     static func writeString(_ value: String, into text: inout String) {

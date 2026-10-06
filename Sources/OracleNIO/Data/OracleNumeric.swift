@@ -23,6 +23,7 @@ import NIOCore
 #endif
 
 private let numberMaxDigits = 40
+private let numberMaxBytes = 22
 private let numberAsSingleChars = 172
 
 extension SignedInteger {
@@ -476,6 +477,11 @@ internal enum OracleNumeric {
         from buffer: inout ByteBuffer
     ) throws -> PartialResult {
         var length = buffer.readableBytes
+        // A NUMBER is at most 22 bytes. A longer value is not one, and its leading zeros could run the decimal
+        // point index past Int16.
+        guard length <= numberMaxBytes else {
+            throw OracleDecodingError.Code.failure
+        }
         // the first byte is the exponent; positive numbers have the highest
         // order bit set, whereas negative numbers have the highest order bit
         // cleared and the bits inverted
@@ -515,14 +521,16 @@ internal enum OracleNumeric {
         for i in 1..<length {
             // positive numbers have 1 added to them; negative numbers are
             // subtracted from the value 101
-            guard var byte = buffer.getInteger(at: i, as: UInt8.self) else {
+            guard let wireByte = buffer.getInteger(at: i, as: UInt8.self) else {
                 throw OracleDecodingError.Code.missingData
             }
-            if isPositive {
-                byte -= 1
-            } else {
-                byte = 101 - byte
+            // A base-100 digit is sent as 1...100, or 101 minus it for a negative number; a byte outside that
+            // range is not a digit, and unsigned arithmetic trapped on it.
+            let digitValue = isPositive ? Int(wireByte) - 1 : 101 - Int(wireByte)
+            guard (0...100).contains(digitValue) else {
+                throw OracleDecodingError.Code.failure
             }
+            let byte = UInt8(digitValue)
 
             // process the first digit; leading zeroes are ignored
             var digit = byte / 10
