@@ -263,6 +263,26 @@ private typealias RowData = OracleBackendMessage.RowData
         }
     }
 
+    /// Measured on Oracle 23ai: a REF column is described with type 111 and its value is one
+    /// length-prefixed slice. Both used to fail, the describe with `oracleTypeNotSupported`.
+    @Test func refColumnIsReadPast() throws {
+        #expect(try OracleDataType.fromORATypeAndCSFRM(typeNumber: 111, csfrm: 0) == .ref)
+        let reference: [UInt8] = [0, 0x22, 2, 8] + [UInt8](repeating: 0x5d, count: 32)
+        var buffer = ByteBuffer(bytes: [UInt8(reference.count)] + reference + [3, 0x6f, 0x6e, 0x65])
+        let row = try RowData.decode(from: &buffer, context: .init(columns: .ref, .varchar))
+        #expect(
+            row
+                == .init(columns: [
+                    .data(ByteBuffer(bytes: [UInt8(reference.count)] + reference)),
+                    .data(ByteBuffer(bytes: [3, 0x6f, 0x6e, 0x65])),
+                ]))
+        #expect(buffer.readableBytes == 0)
+
+        var null = ByteBuffer(bytes: [0, 3, 0x74, 0x77, 0x6f])
+        let nullRow = try RowData.decode(from: &null, context: .init(columns: .ref, .varchar))
+        #expect(nullRow == .init(columns: [.data(ByteBuffer(bytes: [0])), .data(ByteBuffer(bytes: [3, 0x74, 0x77, 0x6f]))]))
+    }
+
     @Test func nullUniversalRowIDIsOneByte() throws {
         var buffer = ByteBuffer(bytes: [0])
         let row = try RowData.decode(from: &buffer, context: .init(columns: .uRowID))

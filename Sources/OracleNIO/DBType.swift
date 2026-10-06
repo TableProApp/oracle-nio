@@ -45,6 +45,7 @@ public struct OracleDataTypeNumber: Sendable, Hashable {
         case nVarchar = 2002
         case object = 2023
         case raw = 2006
+        case ref = 2040
         case rowID = 2005
         case timestamp = 2012
         case timestampLTZ = 2014
@@ -128,6 +129,9 @@ public struct OracleDataTypeNumber: Sendable, Hashable {
 
     @inlinable
     public static var raw: Self { .init(.raw) }
+
+    @inlinable
+    public static var ref: Self { .init(.ref) }
 
     @inlinable
     public static var rowID: Self { .init(.rowID) }
@@ -455,6 +459,18 @@ public struct OracleDataType: Sendable, Equatable, Hashable {
         )
     }
 
+    /// A `REF` to an object. Its value is a reference the client cannot dereference without the
+    /// object type, so it is described and read past, not decoded.
+    @inlinable
+    public static var ref: OracleDataType {
+        OracleDataType(
+            number: .ref,
+            name: "DB_TYPE_REF",
+            oracleName: "REF",
+            oracleType: .init(rawValue: 111).unsafelyUnwrapped
+        )
+    }
+
     @inlinable
     public static var rowID: OracleDataType {
         OracleDataType(
@@ -546,7 +562,7 @@ public struct OracleDataType: Sendable, Equatable, Hashable {
         .bFile, .binaryDouble, .binaryFloat, .binaryInteger, .blob, .boolean,
         .char, .clob, .cursor, .date, .intervalDS, .intervalYM, .json, .long,
         .longNVarchar, .longRAW, .nChar, .nCLOB, .number, .nVarchar, .object,
-        .raw, .rowID, .timestamp, .timestampLTZ, .timestampTZ, .unknown,
+        .raw, .ref, .rowID, .timestamp, .timestampLTZ, .timestampTZ, .unknown,
         .uRowID, .varchar, .vector,
     ]
 }

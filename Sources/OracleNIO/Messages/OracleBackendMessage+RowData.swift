@@ -124,9 +124,10 @@ extension OracleBackendMessage {
             }
 
             switch oracleType {
+            // Measured on Oracle 23ai: a REF arrives as one length-prefixed slice, like RAW.
             case .varchar, .char, .long, .raw, .longRAW, .number, .date, .timestamp,
                 .timestampLTZ, .timestampTZ, .binaryDouble, .binaryFloat,
-                .binaryInteger, .boolean, .intervalDS, .intervalYM:
+                .binaryInteger, .boolean, .intervalDS, .intervalYM, .intRef:
                 switch buffer.readOracleSlice() {
                 case .some(let slice):
                     columnValue = slice
