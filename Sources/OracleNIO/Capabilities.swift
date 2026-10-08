@@ -211,9 +211,26 @@ struct Capabilities: Sendable, Hashable {
     }
 
     func checkNCharsetID() throws {
-        if ![Constants.TNS_CHARSET_UTF16, Constants.TNS_CHARSET_AL16UTF8]
-            .contains(self.nCharsetID)
-        {
+        if self.nCharsetID != Constants.TNS_CHARSET_UTF16 {
+            throw OracleSQLError.nationalCharsetNotSupported
+        }
+    }
+
+    /// NCHAR, NVARCHAR2 and NCLOB values arrive in the database's national character set, which Oracle
+    /// limits to AL16UTF16 and UTF8. A UTF8 value is converted to the UTF-16 the NCHAR decoders read.
+    func nationalCharacterValue(_ value: ByteBuffer) throws -> ByteBuffer {
+        switch self.nCharsetID {
+        case Constants.TNS_CHARSET_UTF16:
+            return value
+        case Constants.TNS_CHARSET_CESU8:
+            guard let text = DataRow(columnCount: 1, bytes: value)[column: 0] else {
+                return value
+            }
+            var utf16 = CESU8.utf16BigEndian(from: text)
+            var converted = ByteBuffer()
+            converted.writeOracleSlice(&utf16)
+            return converted
+        default:
             throw OracleSQLError.nationalCharsetNotSupported
         }
     }

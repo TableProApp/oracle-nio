@@ -105,6 +105,13 @@ import Testing
         #expect(cleanup.action == .closeImmediately)
     }
 
+    /// The national character set is checked while a row is decoded, and a throw from the decoder leaves it unable
+    /// to read the next reply. A cancelled or draining statement hands the error to this check.
+    @Test func nationalCharsetRejectionClosesTheConnection() {
+        let state = ConnectionStateMachine(.readyForStatement)
+        #expect(state.shouldCloseConnection(reason: .nationalCharsetNotSupported))
+    }
+
     @Test func establishedFailureStillLogsOff() {
         var state = ConnectionStateMachine(.readyForStatement)
         guard
