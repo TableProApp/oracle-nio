@@ -115,14 +115,6 @@ extension OracleBackendMessage {
                 return columnValue
             }
 
-            if [.varchar, .char, .long].contains(oracleType) {
-                if csfrm == Constants.TNS_CS_NCHAR {
-                    try capabilities.checkNCharsetID()
-                }
-                // if we need capabilities during decoding in the future, we should
-                // move this to decoding too
-            }
-
             switch oracleType {
             // Measured on Oracle 23ai: a REF arrives as one length-prefixed slice, like RAW.
             case .varchar, .char, .long, .raw, .longRAW, .number, .date, .timestamp,
@@ -297,6 +289,10 @@ extension OracleBackendMessage {
             if !forBind, [.long, .longRAW].contains(oracleType) {
                 try buffer.throwingSkipSB4()  // null indicator
                 try buffer.throwingSkipUB4()  // return code
+            }
+
+            if csfrm == Constants.TNS_CS_NCHAR, [.varchar, .char, .long].contains(oracleType) {
+                columnValue = try capabilities.nationalCharacterValue(columnValue)
             }
 
             return columnValue

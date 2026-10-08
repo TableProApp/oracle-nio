@@ -1223,9 +1223,10 @@ extension ConnectionStateMachine {
             .unsupportedVerifierType,
             .advancedNegotiationFailed,
             .advancedNegotiationRequired,
-            .loginHandshakeTimedOut:
+            .loginHandshakeTimedOut,
+            .nationalCharsetNotSupported:
             return true
-        case .statementCancelled, .nationalCharsetNotSupported, .missingStatement, .malformedStatement:
+        case .statementCancelled, .missingStatement, .malformedStatement:
             return false
         case .server:
             switch error.serverInfo?.number {

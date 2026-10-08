@@ -128,4 +128,23 @@ extension ByteBuffer {
         }
         return self.readSlice(length: sliceLength)
     }
+
+    /// Writes `value` with the framing ``readOracleSlice()`` returns, which `DataRow` reads.
+    mutating func writeOracleSlice(_ value: inout ByteBuffer) {
+        var length = value.readableBytes
+        guard length > Constants.TNS_MAX_SHORT_LENGTH else {
+            self.writeInteger(UInt8(length))
+            self.writeBuffer(&value)
+            return
+        }
+        self.writeInteger(Constants.TNS_LONG_LENGTH_INDICATOR)
+        while value.readableBytes > 0 {
+            let chunkLength = min(length, Constants.TNS_CHUNK_SIZE)
+            self.writeInteger(UInt32(chunkLength))
+            length -= chunkLength
+            var part = value.readSlice(length: chunkLength)!
+            self.writeBuffer(&part)
+        }
+        self.writeInteger(UInt32(0))
+    }
 }

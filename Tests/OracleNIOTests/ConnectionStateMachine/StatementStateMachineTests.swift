@@ -416,6 +416,20 @@ import Testing
         #expect(state.readyForStatementReceived() == .fireEventReadyForStatement)
     }
 
+    /// The national character set is checked while a row is decoded, and a throw from the decoder leaves it unable
+    /// to read the next reply. A cancelled statement still draining its fetch hands the error to the connection.
+    @Test func nationalCharsetRejectionWhileDrainingClosesTheConnection() {
+        let promise = Self.discardedPromise()
+        var state = Self.streamingQuery(promise)
+        _ = state.cancelStatementStream()
+        #expect(state.statementStreamCancelled() == .sendMarker(read: true))
+        let action = state.errorHappened(.nationalCharsetNotSupported)
+        guard case .closeConnectionAndCleanup = action else {
+            Issue.record("Expected the connection to close, got \(action)")
+            return
+        }
+    }
+
     // MARK: Closing the connection
 
     /// The row stream held back a read while the consumer had not asked for rows. Closing must pass it
