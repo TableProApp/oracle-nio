@@ -33,7 +33,7 @@ struct AuthenticationStateMachine {
             OracleBackendMessage.Parameter
         )
         case wait
-        case authenticated(OracleBackendMessage.Parameter)
+        case authenticated(OracleBackendMessage.Parameter, warning: BackendError? = nil)
 
         case reportAuthenticationError(OracleSQLError)
     }
@@ -42,6 +42,8 @@ struct AuthenticationStateMachine {
     let useFastAuth: Bool
     var comboKey: [UInt8]?
     var state: State
+    /// A login can succeed with a warning attached, such as ORA-28002 for a password in its grace period.
+    var warning: BackendError?
 
     init(authContext: AuthContext, useFastAuth: Bool) {
         self.authContext = authContext
@@ -104,7 +106,7 @@ struct AuthenticationStateMachine {
                 guard validatingPart == ArraySlice("SERVER_TO_CLIENT".utf8) else {
                     #if OracleBenchmarksEnabled
                         self.state = .authenticated
-                        return .authenticated(parameters)
+                        return .authenticated(parameters, warning: self.warning)
                     #else
                         return self.errorHappened(
                             .connectionError(underlying: OracleSQLError.ConnectionError.invalidServerResponse))
@@ -113,8 +115,18 @@ struct AuthenticationStateMachine {
             }
 
             self.state = .authenticated
-            return .authenticated(parameters)
+            return .authenticated(parameters, warning: self.warning)
         }
+    }
+
+    mutating func warningReceived(_ warning: BackendError) -> Action {
+        switch self.state {
+        case .authenticationPhaseOneSent, .authenticationPhaseTwoSent:
+            self.warning = warning
+        case .initialized, .error, .authenticated:
+            break
+        }
+        return .wait
     }
 
     mutating func errorReceived(_ message: BackendError) -> Action {

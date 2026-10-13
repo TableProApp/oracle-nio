@@ -83,6 +83,9 @@ public final class OracleConnection: Sendable {
     var serialNumber: Int { self.context.serialNumber }
     /// The version of the Oracle server, the connection is established to.
     public var serverVersion: OracleVersion { self.context.version }
+    /// The warning the server attached to a login that succeeded, such as ORA-28002 for a password
+    /// in its grace period, or `nil` when the login raised none.
+    public var loginWarning: OracleWarning? { self.context.loginWarning }
 
     @usableFromInline
     static let noopLogger = Logger(label: "oracle-nio.noop-logger") { _ in
