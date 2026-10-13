@@ -91,7 +91,7 @@ import Testing
         #expect(state.parameterReceived(parameters: [:]) == .authenticated([:]))
     }
 
-    /// ORA-28002 (ORA-28098 from 23ai) leaves the login successful, so the warning rides along with it.
+    /// ORA-28002 (ORA-28098 on 26ai) leaves the login successful, so the warning rides along with it.
     @Test func warningDuringLoginReachesTheAuthenticatedConnection() {
         var capabilities = Capabilities()
         capabilities.protocolVersion = Constants.TNS_VERSION_DESIRED
@@ -135,6 +135,8 @@ import Testing
         #expect(
             state.parameterReceived(parameters: .init([:])) == .sendAuthenticationPhaseTwo(authContext, .init([:])))
         #expect(state.warningReceived(warning) == .wait)
+        let empty = BackendError(number: 0, rowCount: 0, isWarning: true, message: nil, batchErrors: [])
+        #expect(state.warningReceived(empty) == .wait)
         #expect(state.parameterReceived(parameters: [:]) == .authenticated([:], warning: warning))
 
         // A warning on an open connection is not a login warning and changes nothing.

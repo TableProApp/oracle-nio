@@ -122,7 +122,10 @@ struct AuthenticationStateMachine {
     mutating func warningReceived(_ warning: BackendError) -> Action {
         switch self.state {
         case .authenticationPhaseOneSent, .authenticationPhaseTwoSent:
-            self.warning = warning
+            // A warning message without a number or text reports nothing, so it never replaces one that did.
+            if warning.number != 0, warning.message?.isEmpty == false {
+                self.warning = warning
+            }
         case .initialized, .error, .authenticated:
             break
         }

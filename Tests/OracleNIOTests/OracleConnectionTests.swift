@@ -234,7 +234,7 @@ import Testing
     }
 
 
-    /// A password in its grace period makes the server send ORA-28002 (ORA-28098 from 23ai) ahead of its last
+    /// A password in its grace period makes the server send ORA-28002 (ORA-28098 on 26ai) ahead of its last
     /// authentication reply. The login still succeeds, and the warning stays readable on the connection.
     @Test func loginWithAWarningSucceedsAndKeepsIt() async throws {
         let warning = BackendError(
