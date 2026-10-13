@@ -34,7 +34,7 @@ import Testing
             0,  // server compile capabilities (empty)
             0,  // server runtime capabilities (empty)
         ])
-        let message = try OracleBackendMessage.`Protocol`.decode(
+        let message: OracleBackendMessage.`Protocol` = try .decode(
             from: &buffer, context: context()
         )
         #expect(message.newCapabilities.nCharsetID == 0x07D0)
@@ -53,7 +53,7 @@ import Testing
             1, 2, 3,  // fdo (too short for fdo[5]/fdo[6])
         ])
         #expect(throws: OraclePartialDecodingError.self) {
-            _ = try OracleBackendMessage.`Protocol`.decode(
+            let _: OracleBackendMessage.`Protocol` = try .decode(
                 from: &buffer, context: context()
             )
         }
