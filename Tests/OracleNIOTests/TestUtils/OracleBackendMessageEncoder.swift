@@ -55,6 +55,13 @@ struct OracleBackendMessageEncoder: MessageToByteEncoder {
                     payload: status,
                     out: &out
                 )
+            case .warning(let warning):
+                self.encode(
+                    id: .data,
+                    flags: container.flags,
+                    payload: WarningPayload(warning: warning),
+                    out: &out
+                )
             case .resetOOB:
                 struct ResetOOB: OracleMessagePayloadEncodable {
                     func encode(into buffer: inout ByteBuffer) {
@@ -156,6 +163,24 @@ extension OracleBackendMessage.Status: OracleMessagePayloadEncodable {
         buffer.writeInteger(OracleBackendMessage.MessageID.status.rawValue)
         buffer.writeUB4(self.callStatus)
         buffer.writeUB2(self.endToEndSequenceNumber ?? 0)
+    }
+}
+
+/// The layout Oracle sends a warning in: the number, the text's length and the flags as UB2, then the text with
+/// its own length prefix.
+struct WarningPayload: OracleMessagePayloadEncodable {
+    let warning: BackendError
+
+    func encode(into buffer: inout ByteBuffer) {
+        let text = Array((self.warning.message ?? "").utf8)
+        buffer.writeInteger(OracleBackendMessage.MessageID.warning.rawValue)
+        buffer.writeUB2(UInt16(self.warning.number))
+        buffer.writeUB2(UInt16(text.count))
+        buffer.writeUB2(0)  // flags
+        if !text.isEmpty {
+            buffer.writeInteger(UInt8(text.count))
+            buffer.writeBytes(text)
+        }
     }
 }
 

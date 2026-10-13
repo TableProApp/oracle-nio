@@ -234,6 +234,30 @@ import Testing
     }
 
 
+    /// A password in its grace period makes the server send ORA-28002 (ORA-28098 on 26ai) ahead of its last
+    /// authentication reply. The login still succeeds, and the warning stays readable on the connection.
+    @Test func loginWithAWarningSucceedsAndKeepsIt() async throws {
+        let warning = BackendError(
+            number: 28002,
+            rowCount: 0,
+            isWarning: true,
+            message: "ORA-28002: the password will expire within 7 days",
+            batchErrors: []
+        )
+        try await self.useTestConnectionWithAsyncTestingChannel(loginWarning: warning) { connection, _ in
+            #expect(
+                connection.loginWarning
+                    == OracleWarning(number: 28002, message: "ORA-28002: the password will expire within 7 days")
+            )
+        }
+    }
+
+    @Test func loginWithoutAWarningHasNone() async throws {
+        try await self.useTestConnectionWithAsyncTestingChannel { connection, _ in
+            #expect(connection.loginWarning == nil)
+        }
+    }
+
     /// The session identity comes from the server's last authentication reply. A reply without it used to
     /// end the host process in a precondition; now the login fails with the missing parameter.
     @Test func loginWithoutASessionIDFails() async throws {
@@ -316,6 +340,7 @@ import Testing
 
     typealias C = OracleBackendMessageDecoder.Container
     func useTestConnectionWithAsyncTestingChannel(
+        loginWarning: BackendError? = nil,
         _ work: @escaping (OracleConnection, NIOAsyncTestingChannel) async throws -> Void
     ) async throws {
         let eventLoop = NIOAsyncTestingEventLoop()
@@ -377,6 +402,10 @@ import Testing
 
         // bypass security check
         try await channel.pipeline.handler(type: OracleChannelHandler.self).map { $0.setComboKey(nil) }.get()
+
+        if let loginWarning {
+            try await channel.writeInbound(C(messages: [.warning(loginWarning)]))
+        }
 
         try await channel.writeInbound(
             C(messages: [

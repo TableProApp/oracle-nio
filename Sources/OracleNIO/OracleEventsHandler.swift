@@ -34,6 +34,7 @@ enum OracleSQLEvent {
         let serviceName: String?
         let databaseName: String?
         let instanceName: String?
+        let loginWarning: OracleWarning?
     }
 }
 

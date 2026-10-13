@@ -224,12 +224,11 @@ final class OracleChannelHandler: ChannelDuplexHandler {
         case .queryParameter(let parameter):
             action = self.state.queryParameterReceived(parameter)
         case .warning(let warning):
-            // TODO: maybe we need to inform state about this event in the future
             self.logger.info(
                 "The oracle server sent a warning, everything should be fine",
                 metadata: [.warning: "\(warning)"]
             )
-            action = .wait
+            action = self.state.warningReceived(warning)
         case .ioVector(let vector):
             action = self.state.ioVectorReceived(vector)
         case .flushOutBinds:
@@ -414,8 +413,8 @@ final class OracleChannelHandler: ChannelDuplexHandler {
                 parameters: parameters,
                 context: context
             )
-        case .authenticated(let parameters):
-            self.authenticated(parameters: parameters, context: context)
+        case .authenticated(let parameters, let warning):
+            self.authenticated(parameters: parameters, warning: warning, context: context)
 
         case .sendExecute(let statementContext, let describeInfo, let cursorID, let requiresDefine, let noPrefetch):
             self.sendExecute(
@@ -809,13 +808,14 @@ final class OracleChannelHandler: ChannelDuplexHandler {
 
     private func authenticated(
         parameters: OracleBackendMessage.Parameter,
+        warning: BackendError?,
         context: ChannelHandlerContext
     ) {
         // Did finish starting and authenticating
         self.cancelLoginTimeout()
         let serverContext: OracleSQLEvent.StartupContext
         do {
-            serverContext = try self.getServerContext(from: parameters)
+            serverContext = try self.getServerContext(from: parameters, warning: warning)
         } catch {
             self.run(self.state.errorHappened(error), with: context)
             return
@@ -970,7 +970,8 @@ final class OracleChannelHandler: ChannelDuplexHandler {
     /// The session identity and version come from the server's last authentication reply, so a server that
     /// leaves one out fails the login instead of ending the process.
     private func getServerContext(
-        from parameters: OracleBackendMessage.Parameter
+        from parameters: OracleBackendMessage.Parameter,
+        warning: BackendError?
     ) throws(OracleSQLError) -> OracleSQLEvent.StartupContext {
         let version = try getVersion(from: parameters)
         guard let sessionID = (parameters["AUTH_SESSION_ID"]?.value).flatMap(Int.init) else {
@@ -985,7 +986,8 @@ final class OracleChannelHandler: ChannelDuplexHandler {
             serialNumber: serialNumber,
             serviceName: parameters["AUTH_SC_SERVICE_NAME"]?.value,
             databaseName: parameters["AUTH_DBNAME"]?.value,
-            instanceName: parameters["AUTH_INSTANCENAME"]?.value
+            instanceName: parameters["AUTH_INSTANCENAME"]?.value,
+            loginWarning: warning.flatMap(OracleWarning.init)
         )
     }
 

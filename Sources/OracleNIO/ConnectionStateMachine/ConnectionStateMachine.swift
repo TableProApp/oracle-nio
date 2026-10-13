@@ -160,7 +160,7 @@ struct ConnectionStateMachine {
         case sendAuthenticationPhaseTwo(
             AuthContext, OracleBackendMessage.Parameter
         )
-        case authenticated(OracleBackendMessage.Parameter)
+        case authenticated(OracleBackendMessage.Parameter, warning: BackendError? = nil)
 
         // Ping
         case sendPing
@@ -886,6 +886,19 @@ struct ConnectionStateMachine {
         }
     }
 
+    /// Only a warning raised during the login is kept, for the connection to report once it is open. One that
+    /// arrives with a statement's reply changes nothing about how that statement ends.
+    mutating func warningReceived(_ warning: BackendError) -> ConnectionAction {
+        guard case .authenticating(var authState) = self.state else {
+            return .wait
+        }
+        return self.avoidingStateMachineCoW { machine in
+            let action = authState.warningReceived(warning)
+            machine.state = .authenticating(authState)
+            return machine.modify(with: action)
+        }
+    }
+
     /// A row stream calls back from the event loop, and the statement it belonged to can already have
     /// ended, for example when a fatal error closed the connection. There is nothing left to act on.
     mutating func cancelStatementStream() -> ConnectionAction {
@@ -1339,9 +1352,9 @@ extension ConnectionStateMachine {
             return .sendAuthenticationPhaseTwo(authContext, parameters)
         case .wait:
             return .wait
-        case .authenticated(let parameters):
+        case .authenticated(let parameters, let warning):
             self.state = .readyForStatement
-            return .authenticated(parameters)
+            return .authenticated(parameters, warning: warning)
         case .reportAuthenticationError(let error):
             let cleanupContext = self.setErrorAndCreateCleanupContext(error)
             return .closeConnectionAndCleanup(cleanupContext)

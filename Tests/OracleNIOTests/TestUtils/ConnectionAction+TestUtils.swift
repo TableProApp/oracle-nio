@@ -72,8 +72,8 @@ extension ConnectionStateMachine.ConnectionAction: Equatable {
             .sendAuthenticationPhaseTwo(let rhsContext, let rhsParameters)
         ):
             return lhsContext == rhsContext && lhsParameters == rhsParameters
-        case (.authenticated(let lhs), .authenticated(let rhs)):
-            return lhs == rhs
+        case (.authenticated(let lhs, let lhsWarning), .authenticated(let rhs, let rhsWarning)):
+            return lhs == rhs && lhsWarning == rhsWarning
 
         case (.sendPing, .sendPing):
             return true

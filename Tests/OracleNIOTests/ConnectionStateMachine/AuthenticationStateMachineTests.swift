@@ -91,6 +91,58 @@ import Testing
         #expect(state.parameterReceived(parameters: [:]) == .authenticated([:]))
     }
 
+    /// ORA-28002 (ORA-28098 on 26ai) leaves the login successful, so the warning rides along with it.
+    @Test func warningDuringLoginReachesTheAuthenticatedConnection() {
+        var capabilities = Capabilities()
+        capabilities.protocolVersion = Constants.TNS_VERSION_DESIRED
+        let accept = OracleBackendMessage.Accept(newCapabilities: capabilities)
+        let description = Description(
+            connectionID: "1",
+            addressLists: [],
+            service: .serviceName("service_name"),
+            sslServerDnMatch: false,
+            purity: .default
+        )
+        let authContext = AuthContext(
+            method: .init(username: "test", password: "pasword123"),
+            service: .serviceName("service_name"),
+            terminalName: "",
+            programName: "",
+            machineName: "",
+            pid: 1,
+            processUsername: "",
+            mode: .default,
+            description: description
+        )
+        let warning = BackendError(
+            number: 28002,
+            rowCount: 0,
+            isWarning: true,
+            message: "ORA-28002: the password will expire within 7 days",
+            batchErrors: []
+        )
+
+        var state = ConnectionStateMachine()
+
+        #expect(state.connected() == .sendConnect)
+        #expect(state.acceptReceived(accept, description: description) == .sendProtocol)
+        #expect(state.protocolReceived(.init(newCapabilities: capabilities)) == .sendDataTypes)
+        #expect(state.dataTypesReceived(.init()) == .provideAuthenticationContext(.denied))
+        #expect(
+            state.provideAuthenticationContext(authContext, fastAuth: .denied)
+                == .sendAuthenticationPhaseOne(authContext)
+        )
+        #expect(
+            state.parameterReceived(parameters: .init([:])) == .sendAuthenticationPhaseTwo(authContext, .init([:])))
+        #expect(state.warningReceived(warning) == .wait)
+        let empty = BackendError(number: 0, rowCount: 0, isWarning: true, message: nil, batchErrors: [])
+        #expect(state.warningReceived(empty) == .wait)
+        #expect(state.parameterReceived(parameters: [:]) == .authenticated([:], warning: warning))
+
+        // A warning on an open connection is not a login warning and changes nothing.
+        #expect(state.warningReceived(warning) == .wait)
+    }
+
     /// Only fast authentication expects protocol and data types replies during the login. Anywhere else
     /// they used to be a precondition failure, so a server out of step ended the host process.
     @Test func negotiationReplyOutsideFastAuthClosesTheConnection() {
