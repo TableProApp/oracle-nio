@@ -116,7 +116,7 @@ struct OracleFrontendMessageEncoder {
     /// If the length is exceeded, we have to sent two separate messages to the server.
     /// Because of that, we have to return an array of messages, which is sent by the
     /// ``OracleChannelHandler``.
-    mutating func connect(connectString: String) -> [ByteBuffer] {
+    mutating func connect(connectString: String, packetFlags: UInt8 = 0) -> [ByteBuffer] {
         self.clearIfNeeded()
 
         var buffers = [ByteBuffer]()
@@ -164,7 +164,7 @@ struct OracleFrontendMessageEncoder {
         let isConnectStringToLong =
             connectStringByteLength > Constants.TNS_MAX_CONNECT_DATA
         if isConnectStringToLong {
-            self.endRequest(packetType: .connect)
+            self.endRequest(packetType: .connect, packetFlags: packetFlags)
 
             buffers.append(self.buffer)
             self.buffer.clear()
@@ -173,7 +173,11 @@ struct OracleFrontendMessageEncoder {
         }
         self.buffer.writeString(connectString)
 
-        self.endRequest(packetType: isConnectStringToLong ? .data : .connect)
+        if isConnectStringToLong {
+            self.endRequest(packetType: .data)
+        } else {
+            self.endRequest(packetType: .connect, packetFlags: packetFlags)
+        }
 
         buffers.append(self.buffer)
         self.buffer.clear()
@@ -845,10 +849,12 @@ struct OracleFrontendMessageEncoder {
     }
 
     private mutating func endRequest(
-        packetType: PacketType = .data
+        packetType: PacketType = .data,
+        packetFlags: UInt8 = 0
     ) {
         self.buffer.prepareSend(
             packetType: packetType,
+            packetFlags: packetFlags,
             protocolVersion: self.capabilities.protocolVersion
         )
     }

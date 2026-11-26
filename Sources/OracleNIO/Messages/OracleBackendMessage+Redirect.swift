@@ -14,44 +14,95 @@
 
 import NIOCore
 
-/// Carries a TNS redirect target up the connection startup so the connect routine can
-/// open a fresh connection to the address the listener handed back.
-struct OracleRedirectError: Error, Equatable, Sendable {
+/// A TNS redirect the connection did not end up following.
+public struct OracleRedirectError: Error, Sendable, CustomStringConvertible {
+    public enum Reason: Sendable, Hashable {
+        /// ``OracleConnection/Configuration/followsListenerRedirects`` is off.
+        case notFollowed
+        /// The redirect named no host and port.
+        case unreadable
+        /// A plain TCP connection was redirected to a TCPS address.
+        case transportMismatch
+        /// The listeners kept redirecting past ``OracleConnection/maximumRedirects``.
+        case tooManyRedirects
+        /// The address the listener named could not be reached; ``underlying`` says why.
+        case targetUnreachable
+        /// The listener at the address the first one named refused the connection;
+        /// ``underlying`` is its ``OracleListenerRefusedError``.
+        case targetRefused
+    }
+
+    public var reason: Reason
+    /// The host the listener redirected to, when the redirect named one.
+    public var host: String?
+    public var port: Int?
+    public var underlying: (any Error)?
+
     var address: String
     var connectData: String?
+
+    init(
+        reason: Reason,
+        redirect: OracleBackendMessage.Redirect,
+        underlying: (any Error)? = nil
+    ) {
+        let target = redirect.target
+        self.reason = reason
+        self.host = target?.host
+        self.port = target?.port
+        self.underlying = underlying
+        self.address = redirect.address
+        self.connectData = redirect.connectData
+    }
+
+    public init(reason: Reason, host: String?, port: Int?, underlying: (any Error)? = nil) {
+        self.reason = reason
+        self.host = host
+        self.port = port
+        self.underlying = underlying
+        self.address = ""
+        self.connectData = nil
+    }
+
+    var redirect: OracleBackendMessage.Redirect {
+        .init(address: self.address, connectData: self.connectData)
+    }
+
+    // The connect data echoes the client's host and OS user, so it stays out of this.
+    public var description: String {
+        let target = self.host.map { "\($0):\(self.port.map(String.init) ?? "?")" } ?? "unknown"
+        return "OracleRedirectError(reason: \(self.reason), target: \(target))"
+    }
 }
 
 extension OracleBackendMessage {
-    /// A TNS redirect packet, sent by a listener (RAC SCAN, shared server/MTS, or a
-    /// load-balancing broker) to point the client at the address that actually serves
-    /// the session. The client must open a fresh connection to ``address`` and resend
-    /// the connect request, carrying ``connectData`` when present.
-    struct Redirect: PayloadDecodable, Hashable, Sendable {
+    // A 19c or later listener sends a REDIRECT holding only the data length, then the
+    // data in the DATA packets after it. An older one sends it inline.
+    struct Redirect: Hashable, Sendable {
         var address: String
         var connectData: String?
 
-        static func decode(
-            from buffer: inout ByteBuffer,
-            context: OracleBackendMessageDecoder.Context
-        ) throws -> OracleBackendMessage.Redirect {
-            let dataLength = try buffer.throwingReadInteger(as: UInt16.self)
-            let length = min(Int(dataLength), buffer.readableBytes)
-            let payload = buffer.readString(length: length) ?? ""
-
-            if let separator = payload.firstIndex(of: "\0") {
-                let address = String(payload[payload.startIndex..<separator])
-                let connectData = String(payload[payload.index(after: separator)...])
-                return .init(
-                    address: address,
-                    connectData: connectData.isEmpty ? nil : connectData
-                )
-            }
-
-            return .init(address: payload, connectData: nil)
+        init(address: String, connectData: String?) {
+            self.address = address
+            self.connectData = connectData
         }
 
-        /// Extracts the host and port from the redirect descriptor's first ADDRESS clause,
-        /// e.g. `(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=node1)(PORT=1521))...)`.
+        // `address\0connect-data`, or the address alone from an older listener.
+        init(data: ByteBuffer) {
+            var data = data
+            let payload = data.readString(length: data.readableBytes) ?? ""
+            guard let separator = payload.firstIndex(of: "\0") else {
+                self.init(address: payload, connectData: nil)
+                return
+            }
+            let connectData = payload[payload.index(after: separator)...]
+                .trimmingCharacters(in: "\0")
+            self.init(
+                address: String(payload[payload.startIndex..<separator]),
+                connectData: connectData.isEmpty ? nil : connectData
+            )
+        }
+
         var target: (host: String, port: Int)? {
             guard
                 let host = Self.value(of: "HOST", in: self.address),
@@ -86,6 +137,20 @@ extension OracleBackendMessage {
             return nil
         }
     }
+
+    struct PendingRedirect {
+        var length: Int
+        var data: ByteBuffer
+
+        var isComplete: Bool { self.data.readableBytes >= self.length }
+
+        mutating func append(from buffer: inout ByteBuffer) {
+            let wanted = min(self.length - self.data.readableBytes, buffer.readableBytes)
+            if var chunk = buffer.readSlice(length: wanted) {
+                self.data.writeBuffer(&chunk)
+            }
+        }
+    }
 }
 
 extension StringProtocol {
@@ -95,5 +160,10 @@ extension StringProtocol {
             $0 == " " || $0 == "\t" || $0 == "\n" || $0 == "\r"
         }
         return String(trimmedTail.reversed())
+    }
+
+    fileprivate func trimmingCharacters(in character: Character) -> String {
+        let trimmedHead = self.drop { $0 == character }
+        return String(trimmedHead.reversed().drop { $0 == character }.reversed())
     }
 }

@@ -26,6 +26,7 @@ import NIOSSL
 #endif
 
 #if canImport(Network)
+    import Network
     import NIOTransportServices
 #endif
 
@@ -253,8 +254,17 @@ public final class OracleConnection: Sendable {
                 }
                 connectFuture = eventLoop.makeSucceededFuture(channel)
             case .connectTCP(let host, let port):
-                connectFuture = makeBootstrap(on: eventLoop, configuration: configuration)
-                    .connect(host: host, port: port)
+                let refused = NIOLockedValueBox(false)
+                connectFuture = makeBootstrap(
+                    on: eventLoop, configuration: configuration, refused: refused
+                )
+                .connect(host: host, port: port)
+                .flatMapErrorThrowing { error in
+                    #if canImport(Network)
+                        if refused.withLockedValue({ $0 }) { throw NWError.posix(.ECONNREFUSED) }
+                    #endif
+                    throw error
+                }
             }
 
             return connectFuture.flatMap { channel -> EventLoopFuture<OracleConnection> in
@@ -275,7 +285,8 @@ public final class OracleConnection: Sendable {
 
     static func makeBootstrap(
         on eventLoop: EventLoop,
-        configuration: OracleConnection.Configuration
+        configuration: OracleConnection.Configuration,
+        refused: NIOLockedValueBox<Bool> = NIOLockedValueBox(false)
     ) -> NIOClientTCPBootstrapProtocol {
         #if canImport(Network)
             if let tsBootstrap =
@@ -286,7 +297,14 @@ public final class OracleConnection: Sendable {
                 // the ClientBootstrap path below.
                 return
                     tsBootstrap
-                    .connectTimeout(configuration.options.connectTimeout)
+                    .connectTimeout(configuration.dialTimeout)
+                    .channelInitializer { channel in
+                        channel.eventLoop.makeCompletedFuture {
+                            try channel.pipeline.syncOperations.addHandler(
+                                RefusedConnectHandler(refused: refused)
+                            )
+                        }
+                    }
                     .channelOption(
                         ChannelOptions
                             .socket(SocketOptionLevel(SOL_SOCKET), SO_KEEPALIVE), value: 1
@@ -304,7 +322,7 @@ public final class OracleConnection: Sendable {
         }
         return
             bootstrap
-            .connectTimeout(configuration.options.connectTimeout)
+            .connectTimeout(configuration.dialTimeout)
             .channelOption(
                 ChannelOptions
                     .socket(SocketOptionLevel(SOL_SOCKET), SO_KEEPALIVE), value: 1
@@ -417,12 +435,12 @@ extension OracleConnection: OracleConnectionProtocol {
         while attempts > 0 {
             attempts -= 1
             do {
-                return try await self.connect(
+                return try await self.connectFollowingRedirects(
                     on: eventLoop,
                     configuration: configuration,
                     id: connectionID,
                     logger: logger
-                ).get()
+                )
             } catch let error as CancellationError {
                 throw error
             } catch {
@@ -432,12 +450,92 @@ extension OracleConnection: OracleConnectionProtocol {
                 try await Task.sleep(for: .seconds(configuration.retryDelay))
             }
         }
-        return try await self.connect(
+        return try await self.connectFollowingRedirects(
             on: eventLoop,
             configuration: configuration,
             id: connectionID,
             logger: logger
-        ).get()
+        )
+    }
+
+    /// How many redirects one connect follows before it gives up.
+    public static let maximumRedirects = 5
+
+    // Each hop is a new TCP connection to the address the listener named. One deadline
+    // covers every hop's dial and login, so the chain ends when a single login would.
+    private static func connectFollowingRedirects(
+        on eventLoop: EventLoop,
+        configuration: OracleConnection.Configuration,
+        id connectionID: ID,
+        logger: Logger
+    ) async throws -> OracleConnection {
+        var configuration = configuration
+        configuration.loginDeadline = configuration.options.loginTimeout.map { .now() + $0 }
+        var redirects = 0
+
+        while true {
+            if redirects > 0 {
+                try Task.checkCancellation()
+                if let deadline = configuration.loginDeadline, deadline <= .now() {
+                    throw OracleSQLError.loginHandshakeTimedOut(phase: "connect")
+                }
+            }
+
+            let redirect: OracleBackendMessage.Redirect
+            do {
+                return try await self.connect(
+                    on: eventLoop,
+                    configuration: configuration,
+                    id: connectionID,
+                    logger: logger
+                ).get()
+            } catch let error as OracleSQLError {
+                if let received = error.underlying as? OracleRedirectError {
+                    redirect = received.redirect
+                } else if redirects > 0, let refusal = error.underlying as? OracleListenerRefusedError {
+                    throw Self.redirectFailure(.targetRefused, configuration, refusal)
+                } else {
+                    throw error
+                }
+            } catch let error as CancellationError {
+                throw error
+            } catch where redirects > 0 {
+                throw Self.redirectFailure(.targetUnreachable, configuration, error)
+            }
+
+            guard redirects < Self.maximumRedirects else {
+                throw OracleSQLError.connectionError(
+                    underlying: OracleRedirectError(reason: .tooManyRedirects, redirect: redirect)
+                )
+            }
+            do {
+                configuration = try configuration.followingRedirect(redirect)
+            } catch {
+                throw OracleSQLError.connectionError(underlying: error)
+            }
+            redirects += 1
+            logger.debug(
+                "Following listener redirect \(redirects) of at most \(Self.maximumRedirects)",
+                metadata: [.connectionID: "\(connectionID)"]
+            )
+        }
+    }
+
+    // The listener named this address, so a failure there is the redirect's, and the
+    // message has to say where the connection was sent.
+    private static func redirectFailure(
+        _ reason: OracleRedirectError.Reason,
+        _ configuration: OracleConnection.Configuration,
+        _ underlying: any Error
+    ) -> OracleSQLError {
+        .connectionError(
+            underlying: OracleRedirectError(
+                reason: reason,
+                host: configuration.host,
+                port: configuration.port,
+                underlying: underlying
+            )
+        )
     }
 
     /// Closes the connection to the database server.

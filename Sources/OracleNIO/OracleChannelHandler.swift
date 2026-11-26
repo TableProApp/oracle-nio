@@ -623,11 +623,12 @@ final class OracleChannelHandler: ChannelDuplexHandler {
     /// has no deadline of its own: a server that accepts the connection and then answers
     /// nothing leaves the driver waiting for as long as it keeps the socket open.
     private func startLoginTimeout(context: ChannelHandlerContext) {
-        guard let timeout = self.configuration.options.loginTimeout,
-            self.loginTimeoutTask == nil
+        guard self.loginTimeoutTask == nil,
+            let deadline = self.configuration.loginDeadline
+                ?? self.configuration.options.loginTimeout.map({ .now() + $0 })
         else { return }
 
-        self.loginTimeoutTask = context.eventLoop.scheduleTask(in: timeout) {
+        self.loginTimeoutTask = context.eventLoop.scheduleTask(deadline: deadline) {
             self.loginTimeoutTask = nil
             let phase = self.state.handshakePhase
             guard let phase else { return }
@@ -688,7 +689,8 @@ final class OracleChannelHandler: ChannelDuplexHandler {
 
 
         let messages = self.encoder.connect(
-            connectString: self.configuration.getConnectString()
+            connectString: self.configuration.getConnectString(),
+            packetFlags: self.configuration.connectPacketFlags
         )
         for message in messages {
             context.writeAndFlush(

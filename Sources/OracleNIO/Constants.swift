@@ -26,6 +26,7 @@ import Musl
 enum Constants {
 
     // MARK: Packet flags
+    static let TNS_PACKET_FLAG_REDIRECT: UInt8 = 0x04
     static let TNS_PACKET_FLAG_TLS_RENEG: UInt8 = 0x08
 
     // MARK: Data flags

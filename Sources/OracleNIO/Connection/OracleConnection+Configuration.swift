@@ -218,6 +218,12 @@ extension OracleConnection {
         /// connect to `SQLNET.ENCRYPTION_SERVER = REQUIRED` servers without extra setup.
         public var nativeNetworkEncryption: NativeNetworkEncryptionLevel = .accepted
 
+        /// Whether a TNS redirect from the listener, as a RAC SCAN listener, a shared
+        /// server or Connection Manager sends, is followed to the address it names.
+        /// Turn it off when ``host`` is a forward that only reaches the first listener:
+        /// the redirect then fails with an ``OracleRedirectError`` naming the target.
+        public var followsListenerRedirects: Bool = true
+
         /// A string with the format `host=<host>;port=<port>` that specifies the host and port of
         /// the PL/SQL debugger.
         public var debugJDWP: String?
@@ -406,7 +412,28 @@ extension OracleConnection {
             return desc
         }
 
+        // The descriptor a redirecting listener handed back. It names the instance and
+        // the server type the listener chose, so it is sent as is, never rebuilt.
+        internal var redirectConnectString: String?
+
+        // Set on every hop after a redirect. The listener refuses a CONNECT carrying the
+        // redirect flag rather than redirecting it again, which stops a loop.
+        internal var isRedirected = false
+
+        // When the whole connect has to be over, dial and login of every hop included.
+        internal var loginDeadline: NIODeadline?
+
+        internal var dialTimeout: TimeAmount {
+            guard let loginDeadline else { return self.options.connectTimeout }
+            return max(.milliseconds(1), min(self.options.connectTimeout, loginDeadline - .now()))
+        }
+
+        internal var connectPacketFlags: UInt8 {
+            self.isRedirected ? Constants.TNS_PACKET_FLAG_REDIRECT : 0
+        }
+
         internal func getConnectString() -> String {
+            if let redirectConnectString { return redirectConnectString }
             let description = self.getDescription()
             let cid = """
                 (PROGRAM=\(self.programName))\
@@ -416,22 +443,34 @@ extension OracleConnection {
             return description.buildConnectString(cid)
         }
 
-        /// Returns a copy of this configuration pointed at the address from a TNS redirect,
-        /// or `nil` when the redirect cannot be followed (no parseable target, an
-        /// externally supplied channel, or a redirect back to the current address).
+        /// This configuration pointed at the address a TNS redirect names. Throws an
+        /// ``OracleRedirectError`` when the redirect cannot be followed.
         internal func followingRedirect(
-            _ redirect: OracleRedirectError
-        ) -> OracleConnection.Configuration? {
-            guard case .connectTCP = self.endpointInfo else { return nil }
-            guard
-                let target = OracleBackendMessage.Redirect(
-                    address: redirect.address, connectData: redirect.connectData
-                ).target
-            else { return nil }
-            guard target.host != self.host || target.port != self.port else { return nil }
+            _ redirect: OracleBackendMessage.Redirect
+        ) throws -> OracleConnection.Configuration {
+            guard self.followsListenerRedirects, case .connectTCP = self.endpointInfo else {
+                throw OracleRedirectError(reason: .notFollowed, redirect: redirect)
+            }
+            guard let target = redirect.target else {
+                throw OracleRedirectError(reason: .unreadable, redirect: redirect)
+            }
+            // A dispatcher configured on HOST=0.0.0.0 hands that back as is, and dialing it
+            // reaches this machine, not the server.
+            if ["0.0.0.0", "::", "[::]"].contains(target.host) {
+                throw OracleRedirectError(reason: .targetUnreachable, redirect: redirect)
+            }
+            // A TCPS hop keeps its TLS whatever the redirect says, so only plain TCP told
+            // to go to a TCPS address is refused; it would never get past the handshake.
+            if redirect.usesTCPS, self._protocol == .tcp {
+                throw OracleRedirectError(reason: .transportMismatch, redirect: redirect)
+            }
 
             var copy = self
             copy.endpointInfo = .connectTCP(host: target.host, port: target.port)
+            // A second listener can name an address and nothing else; the descriptor the
+            // first one handed back still names the instance it chose.
+            copy.redirectConnectString = redirect.connectData ?? self.redirectConnectString
+            copy.isRedirected = true
             return copy
         }
     }
