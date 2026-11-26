@@ -118,26 +118,34 @@ extension OracleBackendMessage {
             Self.value(of: "PROTOCOL", in: self.address)?.lowercased() == "tcps"
         }
 
+        // Compared byte by byte with ASCII case folding: uppercasing a listener's text as
+        // Characters traps on a letter like ß, whose uppercase is two characters.
         private static func value(of key: String, in descriptor: String) -> String? {
-            let characters = Array(descriptor)
-            let pattern = Array("\(key)=").map { Character($0.uppercased()) }
-            guard pattern.count <= characters.count else { return nil }
+            let bytes = Array(descriptor.utf8)
+            let pattern = Array("\(key)=".utf8)
+            guard pattern.count <= bytes.count else { return nil }
+            let open = UInt8(ascii: "(")
+            let close = UInt8(ascii: ")")
 
-            for start in 0...(characters.count - pattern.count) {
-                guard
-                    characters[start..<start + pattern.count].map({ Character($0.uppercased()) })
-                        == pattern
-                else {
+            for start in 0...(bytes.count - pattern.count) {
+                guard start == 0 || bytes[start - 1] == open || bytes[start - 1] == UInt8(ascii: " ")
+                else { continue }
+                let candidate = bytes[start..<(start + pattern.count)]
+                guard zip(candidate, pattern).allSatisfy({ Self.asciiUppercased($0) == $1 }) else {
                     continue
                 }
                 // A value without its closing parenthesis is a cut-off descriptor, and
                 // `(PORT=152` must not become port 152.
-                let rest = characters[(start + pattern.count)...]
-                guard let close = rest.firstIndex(of: ")") else { return nil }
-                let trimmed = String(rest[..<close]).trimmingWhitespace()
+                let rest = bytes[(start + pattern.count)...]
+                guard let end = rest.firstIndex(of: close) else { return nil }
+                let trimmed = String(decoding: rest[..<end], as: UTF8.self).trimmingWhitespace()
                 return trimmed.isEmpty ? nil : trimmed
             }
             return nil
+        }
+
+        private static func asciiUppercased(_ byte: UInt8) -> UInt8 {
+            (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(byte) ? byte - 0x20 : byte
         }
     }
 

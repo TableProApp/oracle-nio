@@ -224,6 +224,23 @@ import Testing
         #expect(redirect.target == nil)
     }
 
+    @Test func aHostWhoseUppercaseIsLongerDoesNotTrap() throws {
+        let redirect = OracleBackendMessage.Redirect(
+            address: "(ADDRESS=(protocol=tcp)(HOST=straße.example)(port=1521))", connectData: nil
+        )
+        let target = try #require(redirect.target)
+        #expect(target.host == "straße.example")
+        #expect(target.port == 1521)
+    }
+
+    @Test func aKeyInsideAnotherKeyIsNotMatched() {
+        let redirect = OracleBackendMessage.Redirect(
+            address: "(ADDRESS=(PROTOCOL=TCP)(SHOST=evil)(HOST=node1)(XPORT=1)(PORT=1521))", connectData: nil
+        )
+        #expect(redirect.target?.host == "node1")
+        #expect(redirect.target?.port == 1521)
+    }
+
     @Test func aCutOffPortIsNotAPort() {
         let redirect = OracleBackendMessage.Redirect(
             address: "(ADDRESS=(PROTOCOL=TCP)(HOST=node1)(PORT=152", connectData: nil
