@@ -490,7 +490,7 @@ extension OracleConnection: OracleConnectionProtocol {
                     logger: logger
                 ).get()
             } catch let error as OracleSQLError {
-                if let received = error.underlying as? OracleRedirectError {
+                if let received = error.underlying as? ListenerRedirect {
                     redirect = received.redirect
                 } else if redirects > 0, let refusal = error.underlying as? OracleListenerRefusedError {
                     throw Self.redirectFailure(.targetRefused, configuration, refusal)

@@ -38,9 +38,6 @@ public struct OracleRedirectError: Error, Sendable, CustomStringConvertible {
     public var port: Int?
     public var underlying: (any Error)?
 
-    var address: String
-    var connectData: String?
-
     init(
         reason: Reason,
         redirect: OracleBackendMessage.Redirect,
@@ -51,8 +48,6 @@ public struct OracleRedirectError: Error, Sendable, CustomStringConvertible {
         self.host = target?.host
         self.port = target?.port
         self.underlying = underlying
-        self.address = redirect.address
-        self.connectData = redirect.connectData
     }
 
     public init(reason: Reason, host: String?, port: Int?, underlying: (any Error)? = nil) {
@@ -60,19 +55,18 @@ public struct OracleRedirectError: Error, Sendable, CustomStringConvertible {
         self.host = host
         self.port = port
         self.underlying = underlying
-        self.address = ""
-        self.connectData = nil
     }
 
-    var redirect: OracleBackendMessage.Redirect {
-        .init(address: self.address, connectData: self.connectData)
-    }
-
-    // The connect data echoes the client's host and OS user, so it stays out of this.
     public var description: String {
         let target = self.host.map { "\($0):\(self.port.map(String.init) ?? "?")" } ?? "unknown"
         return "OracleRedirectError(reason: \(self.reason), target: \(target))"
     }
+}
+
+// How the channel tells the connect loop a listener redirected it. It never leaves the
+// loop: the loop follows it or turns it into an ``OracleRedirectError``.
+struct ListenerRedirect: Error {
+    var redirect: OracleBackendMessage.Redirect
 }
 
 extension OracleBackendMessage {

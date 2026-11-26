@@ -538,7 +538,7 @@ struct ConnectionStateMachine {
     ) -> ConnectionAction {
         self.errorHappened(
             .connectionError(
-                underlying: OracleRedirectError(reason: .notFollowed, redirect: redirect)
+                underlying: ListenerRedirect(redirect: redirect)
             )
         )
     }

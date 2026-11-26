@@ -34,7 +34,7 @@ import Testing
 
         var port: Int { self.channel.localAddress!.port! }
 
-        init(reply: @escaping @Sendable (_ port: Int) -> ByteBuffer?) async throws {
+        init(host: String = "127.0.0.1", reply: @escaping @Sendable (_ port: Int) -> ByteBuffer?) async throws {
             let received = NIOLockedValueBox<[ReceivedConnect]>([])
             let portBox = NIOLockedValueBox(0)
             self.received = received
@@ -48,7 +48,7 @@ import Testing
                         )
                     }
                 }
-                .bind(host: "127.0.0.1", port: 0)
+                .bind(host: host, port: 0)
                 .get()
             portBox.withLockedValue { $0 = self.channel.localAddress!.port! }
         }
@@ -258,6 +258,51 @@ import Testing
         #expect(error?.code == .loginHandshakeTimedOut)
         try await scan.close()
         try await silent.close()
+    }
+
+    static let thisMachinesLANAddress: String? = {
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0, let first = interfaces else { return nil }
+        defer { freeifaddrs(interfaces) }
+        for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            guard let address = entry.pointee.ifa_addr, address.pointee.sa_family == UInt8(AF_INET),
+                let socket = try? SocketAddress(address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }, host: ""),
+                let ip = socket.ipAddress, !ip.hasPrefix("127.")
+            else { continue }
+            return ip
+        }
+        return nil
+    }()
+
+    // A listener reached over the network naming this machine, in a spelling no text
+    // check would catch, is refused once the hop sees where it actually connected.
+    @Test(.enabled(if: thisMachinesLANAddress != nil))
+    func aRemoteListenerCannotSendTheClientToThisMachine() async throws {
+        let host = try #require(Self.thisMachinesLANAddress)
+        let local = try await Listener(host: "0.0.0.0") { _ in Self.refuse(code: 12514) }
+        let scan = try await Listener(host: "0.0.0.0") { [localPort = local.port] _ in
+            let address = "(ADDRESS=(PROTOCOL=TCP)(HOST=0:0:0:0:0:0:0:1)(PORT=\(localPort)))"
+            let payload = Array("\(address)\0(DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=orcl)))".utf8)
+            var buffer = ByteBuffer()
+            buffer.writeInteger(UInt16(10 + payload.count))
+            buffer.writeInteger(UInt16(0))
+            buffer.writeInteger(PacketType.redirect.rawValue)
+            buffer.writeInteger(UInt8(0x02))
+            buffer.writeInteger(UInt16(0))
+            buffer.writeInteger(UInt16(payload.count))
+            buffer.writeBytes(payload)
+            return buffer
+        }
+        var configuration = Self.configuration(port: scan.port)
+        configuration.host = host
+
+        let error = await Self.connectError(configuration)
+
+        let redirect = try #require(error?.underlying as? OracleRedirectError)
+        #expect(redirect.reason == .targetUnreachable)
+        #expect(local.received.withLockedValue { $0.isEmpty })
+        try await scan.close()
+        try await local.close()
     }
 
     @Test func aCallerThatDoesNotFollowGetsTheTarget() async throws {

@@ -614,6 +614,18 @@ final class OracleChannelHandler: ChannelDuplexHandler {
     // MARK: - Private Methods -
 
     private func connected(context: ChannelHandlerContext) {
+        if !self.configuration.allowsLocalPeer,
+            context.channel.remoteAddress?.isOnThisMachine == true
+        {
+            let refusal = OracleRedirectError(
+                reason: .targetUnreachable,
+                host: self.configuration.host,
+                port: self.configuration.port
+            )
+            let action = self.state.errorHappened(.connectionError(underlying: refusal))
+            self.run(action, with: context)
+            return
+        }
         self.startLoginTimeout(context: context)
         let action = self.state.connected()
         self.run(action, with: context)

@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import NIOCore
 import Testing
 
 @testable import OracleNIO
@@ -132,17 +133,23 @@ import Testing
         }
     }
 
-    @Test func aRemoteListenerCannotSendTheClientToThisMachine() throws {
-        for host in ["127.0.0.1", "localhost", "::1"] {
-            let error = catching {
-                try makeConfig().followingRedirect(redirect("(ADDRESS=(PROTOCOL=TCP)(HOST=\(host))(PORT=6379))"))
-            }
-            #expect(error?.reason == .targetUnreachable)
+    @Test func whetherAHopMayLandOnThisMachineIsDecidedByTheConfiguredHost() throws {
+        let address = redirect("(ADDRESS=(PROTOCOL=TCP)(HOST=node1)(PORT=1521))")
+        #expect(try makeConfig().followingRedirect(address).allowsLocalPeer == false)
+        for host in ["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1"] {
+            let first = try makeConfig(host: host).followingRedirect(address)
+            #expect(first.allowsLocalPeer, "\(host)")
+            #expect(try first.followingRedirect(address).allowsLocalPeer, "\(host)")
         }
-        let local = try makeConfig(host: "127.0.0.1", port: 15211).followingRedirect(
-            redirect("(ADDRESS=(PROTOCOL=TCP)(HOST=127.0.0.1)(PORT=15212))")
-        )
-        #expect(local.port == 15212)
+    }
+
+    @Test func everySpellingOfThisMachineIsOnIt() throws {
+        for ip in ["127.0.0.1", "127.1.2.3", "0.0.0.0", "::1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "::"] {
+            #expect(try SocketAddress(ipAddress: ip, port: 1521).isOnThisMachine, "\(ip)")
+        }
+        for ip in ["10.0.0.12", "192.168.1.5", "fe80::1", "::ffff:10.0.0.12"] {
+            #expect(try !SocketAddress(ipAddress: ip, port: 1521).isOnThisMachine, "\(ip)")
+        }
     }
 
     @Test func aDescriptorWithControlBytesIsUnreadable() {
