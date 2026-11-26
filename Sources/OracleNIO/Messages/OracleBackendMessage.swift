@@ -100,6 +100,11 @@ extension OracleBackendMessage {
         of packetID: ID,
         context: OracleBackendMessageDecoder.Context
     ) throws -> (TinySequence<OracleBackendMessage>, lastPacket: Bool) {
+        // A listener follows a REDIRECT with its data and nothing else, so any other
+        // packet means the data is not coming.
+        if packetID != .data {
+            context.pendingRedirect = nil
+        }
         switch packetID {
         case .resend:
             return (.init(element: .resend), true)
@@ -115,10 +120,16 @@ extension OracleBackendMessage {
                 true
             )
         case .redirect:
-            return (
-                .init(element: try .redirect(.decode(from: &buffer, context: context))),
-                true
-            )
+            let length = Int(try buffer.throwingReadInteger(as: UInt16.self))
+            var pending = PendingRedirect(length: length, data: ByteBuffer())
+            pending.append(from: &buffer)
+            // Only a listener redirects, before the ACCEPT. Waiting for data after that
+            // would swallow the session's own DATA packets.
+            guard pending.isComplete || context.capabilities.protocolVersion != 0 else {
+                context.pendingRedirect = pending
+                return ([], false)
+            }
+            return (.init(element: .redirect(.init(data: pending.data))), true)
         case .marker:
             return (.init(element: .marker), true)
         case .control:
@@ -133,6 +144,15 @@ extension OracleBackendMessage {
         case .data:
             var messages: TinySequence<OracleBackendMessage> = []
             let flags = try buffer.throwingReadInteger(as: UInt16.self)
+            if var pending = context.pendingRedirect {
+                pending.append(from: &buffer)
+                guard pending.isComplete else {
+                    context.pendingRedirect = pending
+                    return ([], false)
+                }
+                context.pendingRedirect = nil
+                return (.init(element: .redirect(.init(data: pending.data))), true)
+            }
             let lastPacket = (flags & Constants.TNS_DATA_FLAGS_END_OF_REQUEST) != 0
             // The advanced negotiation (native network encryption) response rides in a
             // data packet but has no TTC message ID. It starts with the ANO magic, so

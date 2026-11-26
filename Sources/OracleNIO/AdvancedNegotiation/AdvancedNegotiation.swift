@@ -38,8 +38,11 @@ public enum NativeNetworkEncryptionLevel: Sendable, Hashable {
 /// Sub-packets are typed length/value pairs. Each is `[length: UInt16][type: UInt16]`
 /// followed by the payload. Multi-byte integers are big-endian.
 struct AdvancedNegotiation {
-    struct DecodingError: Error, Equatable {
+    // The reason is the whole message; a caller shows it where a struct dump would not do.
+    struct DecodingError: Error, Equatable, CustomStringConvertible {
         var reason: String
+
+        var description: String { self.reason }
     }
 
     /// Encryption algorithm IDs the client offers, most preferred last (the server

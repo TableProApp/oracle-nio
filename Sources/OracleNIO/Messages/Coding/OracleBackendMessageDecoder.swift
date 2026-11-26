@@ -62,6 +62,8 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
 
         var lobContext: LOBOperationContext?
 
+        var pendingRedirect: OracleBackendMessage.PendingRedirect?
+
         /// Set when an in-band break resets the connection: the decoder drops any
         /// half-read packet before the next read so reassembly starts clean.
         var pendingBufferReset: Bool = false
@@ -128,6 +130,23 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
                 buffer = buffer.slice()
                 return .continue
             }
+        }
+        return .needMoreData
+    }
+
+    // A listener that closes before all of a redirect's data arrived did redirect, but
+    // part of an address is not one to dial, so it surfaces as an unreadable redirect.
+    @usableFromInline
+    mutating func decodeLast(
+        context: ChannelHandlerContext, buffer: inout ByteBuffer, seenEOF: Bool
+    ) throws -> DecodingState {
+        while try self.decode(context: context, buffer: &buffer) == .continue {}
+        if self.context.pendingRedirect != nil {
+            self.context.pendingRedirect = nil
+            let redirect = OracleBackendMessage.redirect(.init(address: "", connectData: nil))
+            context.fireChannelRead(
+                self.wrapInboundOut([Container(flags: 0, messages: .init(element: redirect))])
+            )
         }
         return .needMoreData
     }

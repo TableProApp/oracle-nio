@@ -538,10 +538,7 @@ struct ConnectionStateMachine {
     ) -> ConnectionAction {
         self.errorHappened(
             .connectionError(
-                underlying: OracleRedirectError(
-                    address: redirect.address,
-                    connectData: redirect.connectData
-                )
+                underlying: ListenerRedirect(redirect: redirect)
             )
         )
     }

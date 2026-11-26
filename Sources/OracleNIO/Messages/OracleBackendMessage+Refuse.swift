@@ -19,6 +19,11 @@ import NIOCore
 public struct OracleListenerRefusedError: Error, Equatable, Sendable {
     public var code: Int?
     public var message: String
+
+    public init(code: Int?, message: String) {
+        self.code = code
+        self.message = message
+    }
 }
 
 extension OracleBackendMessage {
