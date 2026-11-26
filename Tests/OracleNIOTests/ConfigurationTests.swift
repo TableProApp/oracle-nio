@@ -132,6 +132,32 @@ import Testing
         }
     }
 
+    @Test func aRemoteListenerCannotSendTheClientToThisMachine() throws {
+        for host in ["127.0.0.1", "localhost", "::1"] {
+            let error = catching {
+                try makeConfig().followingRedirect(redirect("(ADDRESS=(PROTOCOL=TCP)(HOST=\(host))(PORT=6379))"))
+            }
+            #expect(error?.reason == .targetUnreachable)
+        }
+        let local = try makeConfig(host: "127.0.0.1", port: 15211).followingRedirect(
+            redirect("(ADDRESS=(PROTOCOL=TCP)(HOST=127.0.0.1)(PORT=15212))")
+        )
+        #expect(local.port == 15212)
+    }
+
+    @Test func aDescriptorWithControlBytesIsUnreadable() {
+        #expect(
+            reason(of: {
+                try makeConfig().followingRedirect(
+                    redirect(
+                        "(ADDRESS=(PROTOCOL=TCP)(HOST=node1)(PORT=6379))",
+                        connectData: "(DESCRIPTION=)\r\nCONFIG SET dir /tmp\r\n"
+                    )
+                )
+            }) == .unreadable
+        )
+    }
+
     @Test func aSecondRedirectWithoutConnectDataKeepsTheFirstListenersDescriptor() throws {
         let handedBack = "(DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=orcl)(SERVER=shared)(INSTANCE_NAME=orcl1)))"
         let first = try makeConfig().followingRedirect(

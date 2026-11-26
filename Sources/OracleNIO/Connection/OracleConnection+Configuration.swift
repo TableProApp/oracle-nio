@@ -455,14 +455,23 @@ extension OracleConnection {
             // fit one DATA packet cannot be sent.
             let longestConnectData =
                 Int(UInt16.max) - OracleFrontendMessageEncoder.headerSize - MemoryLayout<UInt16>.size
+            // The descriptor goes out as the next CONNECT's payload, so a listener must not
+            // be able to put line breaks or other control bytes in front of whatever
+            // answers at the address it names.
+            let descriptor = redirect.address + (redirect.connectData ?? "")
             guard let target = redirect.target,
-                (redirect.connectData?.utf8.count ?? 0) <= longestConnectData
+                (redirect.connectData?.utf8.count ?? 0) <= longestConnectData,
+                !descriptor.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F })
             else {
                 throw OracleRedirectError(reason: .unreadable, redirect: redirect)
             }
             // A dispatcher configured on HOST=0.0.0.0 hands that back as is, and dialing it
             // reaches this machine, not the server.
-            if ["0.0.0.0", "::", "[::]"].contains(target.host) {
+            // So does a remote listener naming this machine: only a listener reached on
+            // this machine has a reason to send the client back to it.
+            if ["0.0.0.0", "::", "[::]"].contains(target.host)
+                || (target.host.isLoopback && !self.host.isLoopback)
+            {
                 throw OracleRedirectError(reason: .targetUnreachable, redirect: redirect)
             }
             // A TCPS hop keeps its TLS whatever the redirect says, so only plain TCP told
@@ -484,6 +493,11 @@ extension OracleConnection {
 
 // originally taken from NIOSSL
 extension String {
+    fileprivate var isLoopback: Bool {
+        let host = self.lowercased()
+        return host == "localhost" || host == "::1" || host.hasPrefix("127.")
+    }
+
     fileprivate func isIPAddress() -> Bool {
         // We need some scratch space to let inet_pton write into.
         var ipv4Addr = in_addr()
