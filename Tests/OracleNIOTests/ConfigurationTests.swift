@@ -100,6 +100,17 @@ import Testing
         )
     }
 
+    @Test func aDescriptorNoPacketCanCarryIsUnreadable() {
+        let tooLong = "(DESCRIPTION=" + String(repeating: "x", count: 65_530) + ")"
+        #expect(
+            reason(of: {
+                try makeConfig().followingRedirect(
+                    redirect("(ADDRESS=(PROTOCOL=TCP)(HOST=node1)(PORT=1521))", connectData: tooLong)
+                )
+            }) == .unreadable
+        )
+    }
+
     @Test func followingRedirectIsOffWhenTheCallerSaysSo() {
         var config = makeConfig()
         config.followsListenerRedirects = false

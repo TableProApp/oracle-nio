@@ -87,10 +87,16 @@ extension OracleBackendMessage {
             self.connectData = connectData
         }
 
-        // `address\0connect-data`, or the address alone from an older listener.
+        // `address\0connect-data`, or the address alone from an older listener. Invalid
+        // UTF-8 is refused, not repaired: repair can triple the length, past what a
+        // CONNECT can carry.
         init(data: ByteBuffer) {
-            var data = data
-            let payload = data.readString(length: data.readableBytes) ?? ""
+            let bytes = data.getBytes(at: data.readerIndex, length: data.readableBytes) ?? []
+            let payload = String(decoding: bytes, as: UTF8.self)
+            guard Array(payload.utf8) == bytes else {
+                self.init(address: "", connectData: nil)
+                return
+            }
             guard let separator = payload.firstIndex(of: "\0") else {
                 self.init(address: payload, connectData: nil)
                 return
@@ -130,8 +136,11 @@ extension OracleBackendMessage {
                 else {
                     continue
                 }
-                let value = characters[(start + pattern.count)...].prefix { $0 != ")" }
-                let trimmed = String(value).trimmingWhitespace()
+                // A value without its closing parenthesis is a cut-off descriptor, and
+                // `(PORT=152` must not become port 152.
+                let rest = characters[(start + pattern.count)...]
+                guard let close = rest.firstIndex(of: ")") else { return nil }
+                let trimmed = String(rest[..<close]).trimmingWhitespace()
                 return trimmed.isEmpty ? nil : trimmed
             }
             return nil

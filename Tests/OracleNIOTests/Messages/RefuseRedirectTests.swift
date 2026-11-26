@@ -200,9 +200,9 @@ import Testing
         try expectCapturedRedirect(try messages(channel))
     }
 
-    @Test func aListenerThatClosesEarlyStillPassesOnWhatCame() throws {
+    @Test func aListenerThatClosesEarlyIsAnUnreadableRedirect() throws {
         let channel = decoderChannel()
-        let address = "(ADDRESS=(PROTOCOL=TCP)(HOST=node1)(PORT=1521))"
+        let address = "(ADDRESS=(PROTOCOL=TCP)(HOST=node1)(PORT=152"
         var buffer = try bytes(Self.redirectHeader)
         buffer.writeInteger(UInt16(10 + address.utf8.count))
         buffer.writeInteger(UInt16(0))
@@ -220,7 +220,27 @@ import Testing
             Issue.record("expected a redirect message, got \(decoded)")
             return
         }
-        #expect(redirect.target?.host == "node1")
+        #expect(redirect.address.isEmpty)
+        #expect(redirect.target == nil)
+    }
+
+    @Test func aCutOffPortIsNotAPort() {
+        let redirect = OracleBackendMessage.Redirect(
+            address: "(ADDRESS=(PROTOCOL=TCP)(HOST=node1)(PORT=152", connectData: nil
+        )
+        #expect(redirect.target == nil)
+    }
+
+    // Repairing 0xFF to U+FFFD triples it, and connect data past 65535 bytes trapped the
+    // CONNECT encoder's length.
+    @Test func invalidUTF8IsUnreadableNotRepaired() {
+        var data = ByteBuffer()
+        data.writeString("(ADDRESS=(PROTOCOL=TCP)(HOST=node1)(PORT=1521))\0")
+        data.writeBytes(Array(repeating: UInt8(0xFF), count: 22_000))
+        let redirect = OracleBackendMessage.Redirect(data: data)
+        #expect(redirect.address.isEmpty)
+        #expect(redirect.connectData == nil)
+        #expect(redirect.target == nil)
     }
 
     @Test func aRedirectAfterTheAcceptIsNotWaitedOn() throws {

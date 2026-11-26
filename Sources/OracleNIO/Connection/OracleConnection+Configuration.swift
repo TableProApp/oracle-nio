@@ -451,7 +451,13 @@ extension OracleConnection {
             guard self.followsListenerRedirects, case .connectTCP = self.endpointInfo else {
                 throw OracleRedirectError(reason: .notFollowed, redirect: redirect)
             }
-            guard let target = redirect.target else {
+            // Before the ACCEPT a packet's length is 16 bits, so a descriptor that does not
+            // fit one DATA packet cannot be sent.
+            let longestConnectData =
+                Int(UInt16.max) - OracleFrontendMessageEncoder.headerSize - MemoryLayout<UInt16>.size
+            guard let target = redirect.target,
+                (redirect.connectData?.utf8.count ?? 0) <= longestConnectData
+            else {
                 throw OracleRedirectError(reason: .unreadable, redirect: redirect)
             }
             // A dispatcher configured on HOST=0.0.0.0 hands that back as is, and dialing it

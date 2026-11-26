@@ -134,16 +134,16 @@ struct OracleBackendMessageDecoder: ByteToMessageDecoder {
         return .needMoreData
     }
 
-    // A listener that closes before all of a redirect's data arrived still named where
-    // it sends the client, so what came is passed on rather than dropped.
+    // A listener that closes before all of a redirect's data arrived did redirect, but
+    // part of an address is not one to dial, so it surfaces as an unreadable redirect.
     @usableFromInline
     mutating func decodeLast(
         context: ChannelHandlerContext, buffer: inout ByteBuffer, seenEOF: Bool
     ) throws -> DecodingState {
         while try self.decode(context: context, buffer: &buffer) == .continue {}
-        if let pending = self.context.pendingRedirect {
+        if self.context.pendingRedirect != nil {
             self.context.pendingRedirect = nil
-            let redirect = OracleBackendMessage.redirect(.init(data: pending.data))
+            let redirect = OracleBackendMessage.redirect(.init(address: "", connectData: nil))
             context.fireChannelRead(
                 self.wrapInboundOut([Container(flags: 0, messages: .init(element: redirect))])
             )
