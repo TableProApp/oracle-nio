@@ -428,11 +428,6 @@ extension OracleConnection {
             return max(.milliseconds(1), min(self.options.connectTimeout, loginDeadline - .now()))
         }
 
-        // Only a listener reached on this machine has a reason to send the client back to
-        // it. The check runs on the address the hop actually connected to, so no spelling
-        // of a loopback address and no name that resolves to one gets past it.
-        internal var allowsLocalPeer = true
-
         internal var connectPacketFlags: UInt8 {
             self.isRedirected ? Constants.TNS_PACKET_FLAG_REDIRECT : 0
         }
@@ -470,11 +465,6 @@ extension OracleConnection {
             else {
                 throw OracleRedirectError(reason: .unreadable, redirect: redirect)
             }
-            // A dispatcher configured on HOST=0.0.0.0 hands that back as is, and dialing it
-            // reaches this machine, not the server.
-            if ["0.0.0.0", "::", "[::]"].contains(target.host) {
-                throw OracleRedirectError(reason: .targetUnreachable, redirect: redirect)
-            }
             // A TCPS hop keeps its TLS whatever the redirect says, so only plain TCP told
             // to go to a TCPS address is refused; it would never get past the handshake.
             if redirect.usesTCPS, self._protocol == .tcp {
@@ -487,8 +477,6 @@ extension OracleConnection {
             // first one handed back still names the instance it chose.
             copy.redirectConnectString = redirect.connectData ?? self.redirectConnectString
             copy.isRedirected = true
-            // Decided once, from the address the user entered, and kept for every hop.
-            copy.allowsLocalPeer = self.isRedirected ? self.allowsLocalPeer : self.host.isLocalHost
             return copy
         }
     }
@@ -496,11 +484,6 @@ extension OracleConnection {
 
 // originally taken from NIOSSL
 extension String {
-    fileprivate var isLocalHost: Bool {
-        if self.lowercased() == "localhost" { return true }
-        return (try? SocketAddress(ipAddress: self, port: 0))?.isOnThisMachine ?? false
-    }
-
     fileprivate func isIPAddress() -> Bool {
         // We need some scratch space to let inet_pton write into.
         var ipv4Addr = in_addr()
@@ -636,25 +619,3 @@ public struct OracleServiceMethod: Sendable, Equatable {
         }
     }
 #endif
-
-extension SocketAddress {
-    // Loopback in any spelling, IPv4-mapped included, and the 0.0.0.0/8 a connect to the
-    // unspecified address lands on.
-    var isOnThisMachine: Bool {
-        switch self {
-        case .v4(let address):
-            let first = UInt32(bigEndian: address.address.sin_addr.s_addr) >> 24
-            return first == 127 || first == 0
-        case .v6(let address):
-            var raw = address.address.sin6_addr
-            let bytes = withUnsafeBytes(of: &raw) { Array($0) }
-            if bytes[0..<15].allSatisfy({ $0 == 0 }) && (bytes[15] == 1 || bytes[15] == 0) {
-                return true
-            }
-            let mapped = bytes[0..<10].allSatisfy({ $0 == 0 }) && bytes[10] == 0xFF && bytes[11] == 0xFF
-            return mapped && (bytes[12] == 127 || bytes[12] == 0)
-        case .unixDomainSocket:
-            return true
-        }
-    }
-}
