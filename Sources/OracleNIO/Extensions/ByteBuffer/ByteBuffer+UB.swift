@@ -212,16 +212,22 @@ extension ByteBuffer {
 
 extension ByteBuffer {
     /// Skips a value that may be chunked: a length byte, where 0 and `TNS_NULL_LENGTH_INDICATOR` mean
-    /// NULL and `TNS_LONG_LENGTH_INDICATOR` starts UB4-prefixed chunks ending in a zero-length one.
+    /// NULL and `TNS_LONG_LENGTH_INDICATOR` starts chunks ending in a zero-length one.
     /// Throws when the value continues in the next packet, so the decoder retries with it.
-    mutating func throwingSkipRawBytesChunked(file: String = #fileID, line: Int = #line) throws {
+    mutating func throwingSkipRawBytesChunked(
+        chunks: CLRChunkFormat, file: String = #fileID, line: Int = #line
+    ) throws {
         let length = try self.throwingReadInteger(as: UInt8.self, file: file, line: line)
         switch length {
         case 0, Constants.TNS_NULL_LENGTH_INDICATOR:
             return
         case Constants.TNS_LONG_LENGTH_INDICATOR:
             while true {
-                let chunkLength = try self.throwingReadUB4(file: file, line: line)
+                guard let chunkLength = self.readCLRChunkLength(chunks) else {
+                    throw OraclePartialDecodingError.expectedAtLeastNRemainingBytes(
+                        MemoryLayout<UInt8>.size, actual: self.readableBytes, file: file, line: line
+                    )
+                }
                 if chunkLength == 0 { return }
                 try self.throwingMoveReaderIndex(forwardBy: Int(chunkLength), file: file, line: line)
             }

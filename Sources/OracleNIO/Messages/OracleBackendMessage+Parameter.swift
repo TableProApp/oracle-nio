@@ -46,14 +46,15 @@ extension OracleBackendMessage {
             from buffer: inout ByteBuffer,
             context: OracleBackendMessageDecoder.Context
         ) throws -> OracleBackendMessage.Parameter {
+            let chunks = context.capabilities.clrChunkFormat
             let numberOfParameters = try buffer.throwingReadUB2()
             var elements = [Key: Value]()
             for _ in 0..<numberOfParameters {
                 try buffer.throwingSkipUB4()
-                let key = try buffer.readString()
+                let key = try buffer.readString(chunks: chunks)
                 let length = try buffer.throwingReadUB4()
                 let value =
-                    if length > 0 { try buffer.readString() } else { "" }
+                    if length > 0 { try buffer.readString(chunks: chunks) } else { "" }
                 let flags = try buffer.throwingReadUB4()
                 elements[key] = .init(value: value, flags: flags)
             }
@@ -70,6 +71,7 @@ extension OracleBackendMessage {
             from buffer: inout ByteBuffer,
             context: OracleBackendMessageDecoder.Context
         ) throws -> OracleBackendMessage.QueryParameter {
+            let chunks = context.capabilities.clrChunkFormat
             let parametersCount = try buffer.throwingReadUB2()  // al8o4l (ignored)
             for _ in 0..<parametersCount {
                 try buffer.throwingSkipUB4()
@@ -84,10 +86,10 @@ extension OracleBackendMessage {
                 var keyValue: ByteBuffer? = nil
                 if try buffer.throwingReadUB2() > 0 {  // key
                     keyValue =
-                        try buffer.throwingReadOracleSpecificLengthPrefixedSlice()
+                        try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: chunks)
                 }
                 if try buffer.throwingReadUB2() > 0 {  // value
-                    try buffer.throwingSkipRawBytesChunked()
+                    try buffer.throwingSkipRawBytesChunked(chunks: chunks)
                 }
                 let keywordNumber = try buffer.throwingReadUB2()  // keyword number
                 if keywordNumber == Constants.TNS_KEYWORD_NUM_CURRENT_SCHEMA,

@@ -17,6 +17,7 @@ import struct NIOCore.ByteBuffer
 extension ByteBuffer {
     mutating func readString(
         with charset: Int = Constants.TNS_CS_IMPLICIT,
+        chunks: CLRChunkFormat,
         file: String = #fileID, line: Int = #line
     ) throws -> String {
         guard charset == Constants.TNS_CS_IMPLICIT else {
@@ -24,7 +25,7 @@ extension ByteBuffer {
                 type: String.self, file: file, line: line
             )
         }
-        var stringSlice = try self.throwingReadOracleSpecificLengthPrefixedSlice()
+        var stringSlice = try self.throwingReadOracleSpecificLengthPrefixedSlice(chunks: chunks)
         guard let string = stringSlice.readString(length: stringSlice.readableBytes) else {
             throw OraclePartialDecodingError.fieldNotDecodable(
                 type: String.self, file: file, line: line

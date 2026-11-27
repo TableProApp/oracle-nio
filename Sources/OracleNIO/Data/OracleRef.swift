@@ -73,6 +73,9 @@ public final class OracleRef: Sendable, Hashable {
 
     @usableFromInline
     internal let storage: NIOLockedValueBox<ByteBuffer?>
+    // The initial value for a server that reads one-byte chunk lengths, when it is framed differently there.
+    @usableFromInline
+    internal let smallChunkStorage: NIOLockedValueBox<ByteBuffer?>
     @usableFromInline
     internal let metadata: NIOLockedValueBox<OracleBindings.Metadata>
 
@@ -85,6 +88,7 @@ public final class OracleRef: Sendable, Hashable {
     @inlinable
     public init(dataType: OracleDataType) {
         self.storage = NIOLockedValueBox(nil)
+        self.smallChunkStorage = NIOLockedValueBox(nil)
         self.metadata = NIOLockedValueBox(
             .init(
                 dataType: dataType,
@@ -103,6 +107,10 @@ public final class OracleRef: Sendable, Hashable {
         var storage = ByteBuffer()
         try value._encodeRaw(into: &storage, context: .default)
         self.storage = NIOLockedValueBox(storage)
+        self.smallChunkStorage = NIOLockedValueBox(
+            try OracleBindings.smallChunkEncoding(of: storage, context: .default) {
+                try value._encodeRaw(into: &$0, context: $1)
+            })
         self.metadata = NIOLockedValueBox(.init(value: value, protected: true, bindName: nil))
     }
 
@@ -113,6 +121,10 @@ public final class OracleRef: Sendable, Hashable {
         var storage = ByteBuffer()
         value._encodeRaw(into: &storage, context: .default)
         self.storage = NIOLockedValueBox(storage)
+        self.smallChunkStorage = NIOLockedValueBox(
+            OracleBindings.smallChunkEncoding(of: storage, context: .default) {
+                value._encodeRaw(into: &$0, context: $1)
+            })
         self.metadata = NIOLockedValueBox(.init(value: value, protected: true, bindName: nil))
     }
 

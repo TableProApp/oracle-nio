@@ -262,8 +262,20 @@ extension OracleDynamicTypeEncodable {
 public struct OracleEncodingContext: Sendable {
     @usableFromInline @TaskLocal static var jsonMaximumFieldNameSize: Int = 255
 
+    // A statement is built before its server is known, so binds start big and the encoder reframes them for the
+    // connection (`OracleBindings.smallChunkRow`).
     @usableFromInline
-    init() {}
+    var clrChunkFormat: CLRChunkFormat
+
+    @usableFromInline
+    init() {
+        self.clrChunkFormat = .big
+    }
+
+    @usableFromInline
+    init(clrChunkFormat: CLRChunkFormat) {
+        self.clrChunkFormat = clrChunkFormat
+    }
 }
 
 extension OracleEncodingContext {

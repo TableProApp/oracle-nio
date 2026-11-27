@@ -23,7 +23,7 @@ extension ByteBuffer {
 
     @inlinable
     mutating func _readOracleSpecificLengthPrefixedSlice(
-        file: String = #fileID, line: Int = #line
+        chunks: CLRChunkFormat, file: String = #fileID, line: Int = #line
     ) -> LengthOrBuffer {
         guard let length = self.readInteger(as: UInt8.self).map(Int.init) else {
             return .length(MemoryLayout<UInt8>.size)
@@ -32,7 +32,7 @@ extension ByteBuffer {
         if length == Constants.TNS_LONG_LENGTH_INDICATOR {
             var out = ByteBuffer()
             while true {
-                guard let chunkLength = self.readUB4() else {
+                guard let chunkLength = self.readCLRChunkLength(chunks) else {
                     return .length(MemoryLayout<UInt8>.size)
                 }
                 guard chunkLength > 0 else { break }
@@ -56,9 +56,9 @@ extension ByteBuffer {
 
     /// - Returns: `nil` if more data is required to decode
     mutating func readOracleSpecificLengthPrefixedSlice(
-        file: String = #fileID, line: Int = #line
+        chunks: CLRChunkFormat, file: String = #fileID, line: Int = #line
     ) -> ByteBuffer? {
-        switch self._readOracleSpecificLengthPrefixedSlice(file: file, line: line) {
+        switch self._readOracleSpecificLengthPrefixedSlice(chunks: chunks, file: file, line: line) {
         case .buffer(let buffer):
             return buffer
         case .length:
@@ -68,9 +68,9 @@ extension ByteBuffer {
 
     @inlinable
     mutating func throwingReadOracleSpecificLengthPrefixedSlice(
-        file: String = #fileID, line: Int = #line
+        chunks: CLRChunkFormat, file: String = #fileID, line: Int = #line
     ) throws -> ByteBuffer {
-        switch self._readOracleSpecificLengthPrefixedSlice(file: file, line: line) {
+        switch self._readOracleSpecificLengthPrefixedSlice(chunks: chunks, file: file, line: line) {
         case .buffer(let buffer):
             return buffer
         case .length(let length):
@@ -88,7 +88,7 @@ extension ByteBuffer {
     ///
     /// If not enough data could be read, `nil` will be returned, indicating that another packet must be
     /// read from the channel to complete the operation.
-    mutating func readOracleSlice() -> ByteBuffer? {
+    mutating func readOracleSlice(chunks: CLRChunkFormat) -> ByteBuffer? {
         guard
             var length = self.getInteger(at: self.readerIndex, as: UInt8.self)
         else {
@@ -104,7 +104,7 @@ extension ByteBuffer {
             self.moveReaderIndex(forwardBy: MemoryLayout<UInt8>.size)
             var out = ByteBuffer(integer: Constants.TNS_LONG_LENGTH_INDICATOR)
             while true {
-                guard let chunkLength = self.readUB4() else {
+                guard let chunkLength = self.readCLRChunkLength(chunks) else {
                     self.moveReaderIndex(to: startReaderIndex)
                     return nil  // need more data
                 }

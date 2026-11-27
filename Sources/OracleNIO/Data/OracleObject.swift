@@ -48,22 +48,22 @@ struct OracleObject: OracleDecodable {
         case .object:
             let typeOID =
                 if try buffer.throwingReadUB4() > 0 {
-                    try buffer.throwingReadOracleSpecificLengthPrefixedSlice()
+                    try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big)
                 } else { ByteBuffer() }
             let oid =
                 if try buffer.throwingReadUB4() > 0 {
-                    try buffer.throwingReadOracleSpecificLengthPrefixedSlice()
+                    try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big)
                 } else { ByteBuffer() }
             let snapshot =
                 if try buffer.throwingReadUB4() > 0 {
-                    try buffer.throwingReadOracleSpecificLengthPrefixedSlice()
+                    try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big)
                 } else { ByteBuffer() }
             try buffer.throwingSkipUB2()  // version
             let dataLength = try buffer.throwingReadUB4()
             try buffer.throwingSkipUB2()  // flags
             let data =
                 if dataLength > 0 {
-                    try buffer.throwingReadOracleSpecificLengthPrefixedSlice()
+                    try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big)
                 } else { ByteBuffer() }
             self.init(typeOID: typeOID, oid: oid, snapshot: snapshot, data: data)
         default:

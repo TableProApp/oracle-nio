@@ -60,82 +60,82 @@ import Testing
         ] {
             var buffer = incomplete
             #expect(throws: OraclePartialDecodingError.self) {
-                try buffer.throwingSkipRawBytesChunked()
+                try buffer.throwingSkipRawBytesChunked(chunks: .big)
             }
         }
         for complete in [zeroLength, normalLength, longLengthData, nullLength] {
             var buffer = complete
-            try buffer.throwingSkipRawBytesChunked()
+            try buffer.throwingSkipRawBytesChunked(chunks: .big)
             #expect(buffer.readableBytes == 0)
         }
     }
 
     @Test func oracleSpecificLengthPrefixedSlice() {
         var buffer = empty
-        #expect(buffer.readOracleSpecificLengthPrefixedSlice() == nil)
+        #expect(buffer.readOracleSpecificLengthPrefixedSlice(chunks: .big) == nil)
         buffer = normalLengthMissingBytes
-        #expect(buffer.readOracleSpecificLengthPrefixedSlice() == nil)
+        #expect(buffer.readOracleSpecificLengthPrefixedSlice(chunks: .big) == nil)
         buffer = zeroLength
-        #expect(buffer.readOracleSpecificLengthPrefixedSlice() != nil)
+        #expect(buffer.readOracleSpecificLengthPrefixedSlice(chunks: .big) != nil)
         buffer = normalLength
-        #expect(buffer.readOracleSpecificLengthPrefixedSlice() != nil)
+        #expect(buffer.readOracleSpecificLengthPrefixedSlice(chunks: .big) != nil)
 
         buffer = longLengthWithoutData
-        #expect(buffer.readOracleSpecificLengthPrefixedSlice() == nil)
+        #expect(buffer.readOracleSpecificLengthPrefixedSlice(chunks: .big) == nil)
         buffer = longLengthWithoutEnoughData
-        #expect(buffer.readOracleSpecificLengthPrefixedSlice() == nil)
+        #expect(buffer.readOracleSpecificLengthPrefixedSlice(chunks: .big) == nil)
         buffer = longLengthWithoutEnoughDataOnSecondLength
-        #expect(buffer.readOracleSpecificLengthPrefixedSlice() == nil)
+        #expect(buffer.readOracleSpecificLengthPrefixedSlice(chunks: .big) == nil)
         buffer = longLengthWithoutEnoughDataAfterSecondLength
-        #expect(buffer.readOracleSpecificLengthPrefixedSlice() == nil)
+        #expect(buffer.readOracleSpecificLengthPrefixedSlice(chunks: .big) == nil)
         buffer = longLengthData
-        #expect(buffer.readOracleSpecificLengthPrefixedSlice() != nil)
+        #expect(buffer.readOracleSpecificLengthPrefixedSlice(chunks: .big) != nil)
     }
 
     @Test func throwingOracleSpecificLengthPrefixedSlice() {
         var buffer = empty
         #expect(
             throws: OraclePartialDecodingError.expectedAtLeastNRemainingBytes(MemoryLayout<UInt8>.size, actual: 0),
-            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice() }
+            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big) }
         )
         buffer = normalLengthMissingBytes
         #expect(
             throws: OraclePartialDecodingError.expectedAtLeastNRemainingBytes(5, actual: 2),
-            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice() }
+            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big) }
         )
         buffer = zeroLength
-        #expect(throws: Never.self, performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice() })
+        #expect(throws: Never.self, performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big) })
         buffer = normalLength
-        #expect(throws: Never.self, performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice() })
+        #expect(throws: Never.self, performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big) })
 
         buffer = longLengthWithoutData
         #expect(
             throws: OraclePartialDecodingError.expectedAtLeastNRemainingBytes(MemoryLayout<UInt8>.size, actual: 0),
-            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice() }
+            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big) }
         )
         buffer = longLengthWithoutEnoughData
         #expect(
             throws: OraclePartialDecodingError.expectedAtLeastNRemainingBytes(300, actual: 260),
-            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice() }
+            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big) }
         )
         buffer = longLengthWithoutEnoughDataOnSecondLength
         #expect(
             throws: OraclePartialDecodingError.expectedAtLeastNRemainingBytes(MemoryLayout<UInt8>.size, actual: 0),
-            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice() }
+            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big) }
         )
         buffer = longLengthWithoutEnoughDataAfterSecondLength
         #expect(
             throws: OraclePartialDecodingError.expectedAtLeastNRemainingBytes(2, actual: 0),
-            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice() }
+            performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big) }
 
         )
         buffer = longLengthData
-        #expect(throws: Never.self, performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice() })
+        #expect(throws: Never.self, performing: { try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big) })
     }
 
     @Test func readOracleSliceReturnsNilOnEmptyBuffer() {
         var buffer = ByteBuffer()
-        #expect(buffer.readOracleSlice() == nil)
+        #expect(buffer.readOracleSlice(chunks: .big) == nil)
     }
 
     @Test func throwingSkipUBShouldThrowOnMissingBytes() {
@@ -148,9 +148,9 @@ import Testing
 
     @Test func readOSONFailsAppropriately() {
         var sliceMissingBuffer = ByteBuffer(bytes: [1, 40, 0, 0])
-        #expect((try? sliceMissingBuffer.throwingReadOSON()) == nil)  // TODO: refactor to throw
+        #expect((try? sliceMissingBuffer.throwingReadOSON(chunks: .big)) == nil)  // TODO: refactor to throw
         var locatorMissingBuffer = ByteBuffer(bytes: [1, 40, 0, 0, 0])
-        #expect((try? locatorMissingBuffer.throwingReadOSON()) == nil)  // TODO: refactor to throw
+        #expect((try? locatorMissingBuffer.throwingReadOSON(chunks: .big)) == nil)  // TODO: refactor to throw
     }
 
     @Test func throwingSkipUBThrowsOnMissingLength() {
@@ -185,7 +185,7 @@ import Testing
     @Test func readStringThrowsOnUnsupportedCharset() {
         var buffer = ByteBuffer(bytes: [1, 0x41])
         #expect(throws: OraclePartialDecodingError.self) {
-            _ = try buffer.readString(with: Constants.TNS_CS_IMPLICIT + 1)
+            _ = try buffer.readString(with: Constants.TNS_CS_IMPLICIT + 1, chunks: .big)
         }
     }
 

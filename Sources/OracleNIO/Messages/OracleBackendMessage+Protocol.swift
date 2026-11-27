@@ -63,13 +63,13 @@ extension OracleBackendMessage {
                 (UInt16(fdo[ix + 3]) << 8) + UInt16(fdo[ix + 4])
 
             let serverCompileCapabilities = try buffer
-                .throwingReadOracleSpecificLengthPrefixedSlice()
+                .throwingReadOracleSpecificLengthPrefixedSlice(chunks: capabilities.clrChunkFormat)
             capabilities.adjustForServerCompileCapabilities(
                 serverCompileCapabilities
             )
 
             let serverRuntimeCapabilities = try buffer
-                .throwingReadOracleSpecificLengthPrefixedSlice()
+                .throwingReadOracleSpecificLengthPrefixedSlice(chunks: capabilities.clrChunkFormat)
             capabilities.adjustForServerRuntimeCapabilities(
                 serverRuntimeCapabilities
             )

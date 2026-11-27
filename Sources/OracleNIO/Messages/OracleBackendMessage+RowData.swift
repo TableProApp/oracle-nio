@@ -110,6 +110,7 @@ extension OracleBackendMessage {
             capabilities: Capabilities
         ) throws -> ByteBuffer {
             var columnValue: ByteBuffer
+            let chunks = capabilities.clrChunkFormat
             if bufferSize == 0 && ![.long, .longRAW, .uRowID].contains(oracleType) {
                 columnValue = ByteBuffer(bytes: [0])  // NULL indicator
                 return columnValue
@@ -120,7 +121,7 @@ extension OracleBackendMessage {
             case .varchar, .char, .long, .raw, .longRAW, .number, .date, .timestamp,
                 .timestampLTZ, .timestampTZ, .binaryDouble, .binaryFloat,
                 .binaryInteger, .boolean, .intervalDS, .intervalYM, .intRef:
-                switch buffer.readOracleSlice() {
+                switch buffer.readOracleSlice(chunks: chunks) {
                 case .some(let slice):
                     columnValue = slice
                 case .none:
@@ -128,7 +129,7 @@ extension OracleBackendMessage {
                 }
             case .rowID:
                 if forBind {
-                    let value = try buffer.readString()
+                    let value = try buffer.readString(chunks: chunks)
                     let rowID = RowID(value)
                     columnValue = ByteBuffer()
                     try columnValue.writeLengthPrefixed(as: UInt8.self) {
@@ -178,7 +179,7 @@ extension OracleBackendMessage {
                 // the locator and writing NULL made every BFILE read as NULL.
                 let length = try buffer.throwingReadUB4()
                 if length > 0 {
-                    switch buffer.readOracleSlice() {
+                    switch buffer.readOracleSlice(chunks: chunks) {
                     case .some(let locator):
                         columnValue = locator
                     case .none:
@@ -195,7 +196,7 @@ extension OracleBackendMessage {
                     let size = try buffer.throwingReadUB8()
                     let chunkSize = try buffer.throwingReadUB4()
                     var locator: ByteBuffer
-                    switch buffer.readOracleSlice() {
+                    switch buffer.readOracleSlice(chunks: chunks) {
                     case .some(let slice):
                         locator = slice
                     case .none:
@@ -210,7 +211,7 @@ extension OracleBackendMessage {
                     columnValue = .init(bytes: [0])  // empty buffer
                 }
             case .json:
-                switch try buffer.throwingReadOSON() {
+                switch try buffer.throwingReadOSON(chunks: chunks) {
                 case .some(let slice):
                     columnValue = slice
                 case .none:
@@ -221,26 +222,30 @@ extension OracleBackendMessage {
                 if length > 0 {
                     try buffer.throwingSkipUB8()  // size (unused)
                     try buffer.throwingSkipUB4()  // chunk size (unused)
-                    switch buffer.readOracleSlice() {
+                    switch buffer.readOracleSlice(chunks: chunks) {
                     case .some(let slice):
                         columnValue = slice
                     case .none:
                         throw MissingDataDecodingError.Trigger()
                     }
-                    try buffer.throwingSkipRawBytesChunked()  // LOB locator (unused)
+                    try buffer.throwingSkipRawBytesChunked(chunks: chunks)  // LOB locator (unused)
                 } else {
                     columnValue = .init(bytes: [0])  // empty buffer
                 }
             case .intNamed:
+                guard chunks == .big else {
+                    columnValue = try Self.objectImage(from: &buffer, chunks: chunks)
+                    break
+                }
                 let startIndex = buffer.readerIndex
                 if try buffer.throwingReadUB4() > 0 {
-                    try buffer.throwingSkipRawBytesChunked()  // type oid
+                    try buffer.throwingSkipRawBytesChunked(chunks: chunks)  // type oid
                 }
                 if try buffer.throwingReadUB4() > 0 {
-                    try buffer.throwingSkipRawBytesChunked()  // oid
+                    try buffer.throwingSkipRawBytesChunked(chunks: chunks)  // oid
                 }
                 if try buffer.throwingReadUB4() > 0 {
-                    try buffer.throwingSkipRawBytesChunked()  // snapshot
+                    try buffer.throwingSkipRawBytesChunked(chunks: chunks)  // snapshot
                 }
                 try buffer.throwingSkipUB2()  // version
                 let dataLength = try buffer.throwingReadUB4()
@@ -250,7 +255,7 @@ extension OracleBackendMessage {
                     columnValue = ByteBuffer(bytes: [0])  // NULL indicator
                     break
                 }
-                try buffer.throwingSkipRawBytesChunked()  // data
+                try buffer.throwingSkipRawBytesChunked(chunks: chunks)  // data
                 let endIndex = buffer.readerIndex
                 buffer.moveReaderIndex(to: startIndex)
                 columnValue = ByteBuffer(integer: Constants.TNS_LONG_LENGTH_INDICATOR)
@@ -267,15 +272,15 @@ extension OracleBackendMessage {
                 columnValue.writeInteger(0, as: UInt32.self)  // chunk length of zero
             case .uRowID:
                 if forBind {
-                    columnValue = Self.columnValue(text: try buffer.readString())
+                    columnValue = Self.columnValue(text: try buffer.readString(chunks: chunks))
                 } else {
                     // Measured on Oracle 23ai: a one-byte slice holding the length of the slice that
                     // follows, which carries the rowid. A NULL is the first slice alone, empty.
-                    let lengthSlice = try buffer.throwingReadOracleSpecificLengthPrefixedSlice()
+                    let lengthSlice = try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: chunks)
                     if lengthSlice.readableBytes == 0 {
                         columnValue = ByteBuffer(bytes: [0])  // NULL indicator
                     } else {
-                        let rowID = try RowID(universal: buffer.throwingReadOracleSpecificLengthPrefixedSlice())
+                        let rowID = try RowID(universal: buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: chunks))
                         columnValue = Self.columnValue(text: rowID.description)
                     }
                 }
@@ -295,6 +300,33 @@ extension OracleBackendMessage {
                 columnValue = try capabilities.nationalCharacterValue(columnValue)
             }
 
+            return columnValue
+        }
+
+        // `OracleObject` reads the image a big-chunk server sends, so a small-chunk one is rewritten in that framing.
+        private static func objectImage(from buffer: inout ByteBuffer, chunks: CLRChunkFormat) throws -> ByteBuffer {
+            var image = ByteBuffer()
+            for _ in 0..<3 {  // type oid, oid, snapshot
+                let length = try buffer.throwingReadUB4()
+                image.writeUB4(length)
+                if length > 0 {
+                    let part = try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: chunks)
+                    image.writeOracleCLR(part.readableBytesView, format: .big)
+                }
+            }
+            image.writeUB2(try buffer.throwingReadUB2())  // version
+            let dataLength = try buffer.throwingReadUB4()
+            image.writeUB4(dataLength)
+            image.writeUB2(try buffer.throwingReadUB2())  // flags
+            guard dataLength > 0 else {
+                return ByteBuffer(bytes: [0])  // NULL indicator
+            }
+            let data = try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: chunks)
+            image.writeOracleCLR(data.readableBytesView, format: .big)
+            var columnValue = ByteBuffer(integer: Constants.TNS_LONG_LENGTH_INDICATOR)
+            columnValue.writeInteger(UInt32(image.readableBytes))
+            columnValue.writeBuffer(&image)
+            columnValue.writeInteger(0, as: UInt32.self)  // chunk length of zero
             return columnValue
         }
 

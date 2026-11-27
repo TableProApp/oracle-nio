@@ -233,6 +233,7 @@ struct StatementStateMachine {
                 switch column {
                 case .data(let buffer):
                     outBinds[index].storage.withLockedValue { $0 = buffer }
+                    outBinds[index].smallChunkStorage.withLockedValue { $0 = nil }
                 case .duplicate:
                     return .evaluateErrorAtConnectionLevel(.unexpectedBackendMessage(.rowData(rowData)))
                 }
