@@ -30,7 +30,7 @@ extension Data: OracleEncodable {
         context: OracleEncodingContext
     ) {
         buffer.reserveCapacity(minimumWritableBytes: MemoryLayout<UInt8>.size + self.count)
-        buffer.writeOracleCLR(self, format: context.clrChunkFormat)
+        buffer.writeOracleCLR(self, context: context)
     }
 
     @inlinable

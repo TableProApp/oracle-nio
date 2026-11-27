@@ -73,9 +73,6 @@ public final class OracleRef: Sendable, Hashable {
 
     @usableFromInline
     internal let storage: NIOLockedValueBox<ByteBuffer?>
-    // The initial value for a server that reads one-byte chunk lengths, when it is framed differently there.
-    @usableFromInline
-    internal let smallChunkStorage: NIOLockedValueBox<ByteBuffer?>
     @usableFromInline
     internal let metadata: NIOLockedValueBox<OracleBindings.Metadata>
 
@@ -88,7 +85,6 @@ public final class OracleRef: Sendable, Hashable {
     @inlinable
     public init(dataType: OracleDataType) {
         self.storage = NIOLockedValueBox(nil)
-        self.smallChunkStorage = NIOLockedValueBox(nil)
         self.metadata = NIOLockedValueBox(
             .init(
                 dataType: dataType,
@@ -106,11 +102,7 @@ public final class OracleRef: Sendable, Hashable {
     public init<V: OracleThrowingDynamicTypeEncodable>(_ value: V) throws {
         var storage = ByteBuffer()
         try value._encodeRaw(into: &storage, context: .default)
-        self.storage = NIOLockedValueBox(storage)
-        self.smallChunkStorage = NIOLockedValueBox(
-            try OracleBindings.smallChunkEncoding(of: storage, context: .default) {
-                try value._encodeRaw(into: &$0, context: $1)
-            })
+        self.storage = NIOLockedValueBox(Self.rowFraming(of: storage, type: value.oracleType))
         self.metadata = NIOLockedValueBox(.init(value: value, protected: true, bindName: nil))
     }
 
@@ -120,11 +112,7 @@ public final class OracleRef: Sendable, Hashable {
     public init<V: OracleEncodable>(_ value: V) {
         var storage = ByteBuffer()
         value._encodeRaw(into: &storage, context: .default)
-        self.storage = NIOLockedValueBox(storage)
-        self.smallChunkStorage = NIOLockedValueBox(
-            OracleBindings.smallChunkEncoding(of: storage, context: .default) {
-                value._encodeRaw(into: &$0, context: $1)
-            })
+        self.storage = NIOLockedValueBox(Self.rowFraming(of: storage, type: value.oracleType))
         self.metadata = NIOLockedValueBox(.init(value: value, protected: true, bindName: nil))
     }
 
@@ -186,5 +174,37 @@ public final class OracleRef: Sendable, Hashable {
                 )!
             }
         }
+    }
+}
+
+// `storage` holds a value as a row frames it, which is what a returned value arrives as and what `decode` reads. A
+// chunked value is framed differently on the wire, so a bind derives the wire's framing from it.
+extension OracleRef {
+    @usableFromInline
+    static let singleValueTypes: Set<_TNSDataType> = [.varchar, .char, .long, .raw, .longRAW]
+
+    @usableFromInline
+    static func rowFraming(of wire: ByteBuffer, type: OracleDataType) -> ByteBuffer {
+        guard let oracleType = type._oracleType, Self.singleValueTypes.contains(oracleType),
+            wire.getInteger(at: wire.readerIndex, as: UInt8.self) == Constants.TNS_LONG_LENGTH_INDICATOR
+        else { return wire }
+        var remaining = wire
+        guard var value = try? remaining.throwingReadOracleSpecificLengthPrefixedSlice(chunks: .big),
+            remaining.readableBytes == 0
+        else { return wire }
+        var row = ByteBuffer()
+        row.writeOracleSlice(&value)
+        return row
+    }
+
+    @usableFromInline
+    static func wireFraming(of row: ByteBuffer, type: OracleDataType, format: CLRChunkFormat) -> ByteBuffer {
+        guard let oracleType = type._oracleType, Self.singleValueTypes.contains(oracleType),
+            row.getInteger(at: row.readerIndex, as: UInt8.self) == Constants.TNS_LONG_LENGTH_INDICATOR,
+            let value = DataRow(columnCount: 1, bytes: row)[column: 0]
+        else { return row }
+        var wire = ByteBuffer()
+        wire.writeOracleCLR(value.readableBytesView, format: format)
+        return wire
     }
 }

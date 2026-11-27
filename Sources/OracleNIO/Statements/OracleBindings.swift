@@ -286,18 +286,22 @@ public struct OracleBindings: Sendable, Hashable {
             value.storage.withLockedValue { valueStorage in
                 let long = valueStorage != nil && metadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH
                 let start = long ? self.longBytes.writerIndex : self.bytes.writerIndex
-                if var bytes = valueStorage {
+                var small: ByteBuffer?
+                if let valueStorage {
+                    var bytes = OracleRef.wireFraming(of: valueStorage, type: metadata.dataType, format: .big)
                     if long {
                         self.longBytes.writeBuffer(&bytes)
                     } else {
                         self.bytes.writeBuffer(&bytes)
                     }
+                    let smallBytes = OracleRef.wireFraming(of: valueStorage, type: metadata.dataType, format: .small)
+                    small = smallBytes == bytes ? nil : smallBytes
                 } else if !isReturning {  // return binds do not send null
                     self.bytes.writeInteger(UInt8(0))  // null
                 }
                 Self.mirror(
                     into: &self.smallChunkRow, bytes: self.bytes, longBytes: self.longBytes,
-                    long: long, start: start, small: value.smallChunkStorage.withLockedValue { $0 }
+                    long: long, start: start, small: small
                 )
             }
             self.metadata.append(metadata)
@@ -377,6 +381,8 @@ extension OracleBindings {
         }
     }
 
+    // The encoder runs once, and a second time in the small format only for a value that chunked. A throw leaves
+    // the binds as they were.
     @inlinable
     static func appendEncoded(
         to bytes: inout ByteBuffer,
@@ -386,32 +392,33 @@ extension OracleBindings {
         context: OracleEncodingContext,
         _ encode: (inout ByteBuffer, OracleEncodingContext) throws -> Void
     ) rethrows {
-        let start = long ? longBytes.writerIndex : bytes.writerIndex
-        if long {
-            try encode(&longBytes, context)
-        } else {
-            try encode(&bytes, context)
+        let bytesEnd = bytes.writerIndex
+        let longBytesEnd = longBytes.writerIndex
+        let start = long ? longBytesEnd : bytesEnd
+        var recording = context
+        recording.chunkWitness = NIOLockedValueBox(false)
+        do {
+            if long {
+                try encode(&longBytes, recording)
+            } else {
+                try encode(&bytes, recording)
+            }
+            var small: ByteBuffer?
+            if recording.chunkWitness?.withLockedValue({ $0 }) == true {
+                var smallContext = context
+                smallContext.clrChunkFormat = .small
+                var buffer = ByteBuffer()
+                try encode(&buffer, smallContext)
+                small = buffer
+            }
+            Self.mirror(
+                into: &smallChunkRow, bytes: bytes, longBytes: longBytes, long: long, start: start, small: small
+            )
+        } catch {
+            bytes.moveWriterIndex(to: bytesEnd)
+            longBytes.moveWriterIndex(to: longBytesEnd)
+            throw error
         }
-        let written = long ? longBytes : bytes
-        let small = try Self.smallChunkEncoding(
-            of: written.getSlice(at: start, length: written.writerIndex - start)!, context: context, encode
-        )
-        Self.mirror(into: &smallChunkRow, bytes: bytes, longBytes: longBytes, long: long, start: start, small: small)
-    }
-
-    // Only a chunked value differs between the formats, and it always holds TNS_LONG_LENGTH_INDICATOR.
-    @inlinable
-    static func smallChunkEncoding(
-        of encoded: ByteBuffer,
-        context: OracleEncodingContext,
-        _ encode: (inout ByteBuffer, OracleEncodingContext) throws -> Void
-    ) rethrows -> ByteBuffer? {
-        guard encoded.readableBytesView.contains(Constants.TNS_LONG_LENGTH_INDICATOR) else { return nil }
-        var smallContext = context
-        smallContext.clrChunkFormat = .small
-        var small = ByteBuffer()
-        try encode(&small, smallContext)
-        return small == encoded ? nil : small
     }
 
     // Copies the value written at `start` into the small row, or its `small` framing, and starts the row from what

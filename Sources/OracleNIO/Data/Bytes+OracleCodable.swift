@@ -26,7 +26,7 @@ extension OracleEncodable where Self: Collection, Self.Element == UInt8 {
         into buffer: inout ByteBuffer,
         context: OracleEncodingContext
     ) {
-        buffer.writeOracleCLR(self, format: context.clrChunkFormat)
+        buffer.writeOracleCLR(self, context: context)
     }
 
     @inlinable

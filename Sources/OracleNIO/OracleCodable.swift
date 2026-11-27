@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import NIOConcurrencyHelpers
 import NIOCore
 
 #if canImport(FoundationEssentials)
@@ -262,19 +263,24 @@ extension OracleDynamicTypeEncodable {
 public struct OracleEncodingContext: Sendable {
     @usableFromInline @TaskLocal static var jsonMaximumFieldNameSize: Int = 255
 
-    // A statement is built before its server is known, so binds start big and the encoder reframes them for the
-    // connection (`OracleBindings.smallChunkRow`).
+    // A statement is built before its server is known, so binds start big and a chunked one is framed small too
+    // (`OracleBindings.smallChunkRow`).
     @usableFromInline
     var clrChunkFormat: CLRChunkFormat
+    // Set when a value's encoder wrote chunks, the only case the two formats differ.
+    @usableFromInline
+    var chunkWitness: NIOLockedValueBox<Bool>?
 
     @usableFromInline
     init() {
         self.clrChunkFormat = .big
+        self.chunkWitness = nil
     }
 
     @usableFromInline
     init(clrChunkFormat: CLRChunkFormat) {
         self.clrChunkFormat = clrChunkFormat
+        self.chunkWitness = nil
     }
 }
 

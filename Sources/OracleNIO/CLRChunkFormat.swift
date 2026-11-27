@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import NIOConcurrencyHelpers
 import NIOCore
 
 // How a value longer than one length byte gives the length of each chunk. The server picks it for both directions
@@ -56,6 +57,15 @@ extension ByteBuffer {
         case .small: self.writeInteger(UInt8(length))
         case .big: self.writeUB4(UInt32(length))
         }
+    }
+
+    // A value's encoder writes in the context's format, and tells the context's witness when it chunked.
+    @inlinable
+    mutating func writeOracleCLR<Bytes: Collection<UInt8>>(_ bytes: Bytes, context: OracleEncodingContext) {
+        if bytes.count > Constants.TNS_MAX_SHORT_LENGTH {
+            context.chunkWitness?.withLockedValue { $0 = true }
+        }
+        self.writeOracleCLR(bytes, format: context.clrChunkFormat)
     }
 
     // A length byte and the bytes, or chunks once the value is longer than a length byte can say.

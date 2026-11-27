@@ -25,7 +25,7 @@ extension ByteBuffer: OracleEncodable {
     ) {
         var slice = self
         slice.moveReaderIndex(to: 0)
-        buffer.writeOracleCLR(slice.readableBytesView, format: context.clrChunkFormat)
+        buffer.writeOracleCLR(slice.readableBytesView, context: context)
     }
 
     /// Encodes `self` into wire data starting from `0` without modifying the `readerIndex`.

@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import NIOConcurrencyHelpers
 import NIOCore
 import NIOEmbedded
 import Testing
@@ -277,12 +278,60 @@ import Testing
         #expect(Self.contains(message, expected))
     }
 
-    @Test func refValueKeepsASmallChunkCopy() {
-        let ref = OracleRef(String(repeating: "r", count: 300))
-        var expected = ByteBuffer()
-        String(repeating: "r", count: 300).encode(into: &expected, context: OracleEncodingContext(clrChunkFormat: .small))
-        #expect(ref.smallChunkStorage.withLockedValue { $0 } == expected)
-        #expect(OracleRef("short").smallChunkStorage.withLockedValue { $0 } == nil)
+    @Test func refWithALongValueDecodesAndBindsInEitherFormat() throws {
+        let long = String(repeating: "r", count: 300)
+        let ref = OracleRef(long)
+        #expect(try ref.decode(as: String.self) == long)
+
+        var bindings = OracleBindings()
+        bindings.append(ref, isReturning: false)
+        var big = ByteBuffer()
+        big.writeOracleCLR(Array(long.utf8), format: .big)
+        var small = ByteBuffer()
+        small.writeOracleCLR(Array(long.utf8), format: .small)
+        #expect(bindings.bytes == big)
+        #expect(bindings.smallChunkRow?.bytes == small)
+    }
+
+    // A returned value arrives as a row frames it; bound again, it goes in the wire's framing.
+    @Test func refThatReceivedALongValueBindsItAgainInEitherFormat() throws {
+        let long = String(repeating: "o", count: 300)
+        let ref = OracleRef(dataType: .varchar)
+        var value = ByteBuffer(string: long)
+        var row = ByteBuffer()
+        row.writeOracleSlice(&value)
+        ref.storage.withLockedValue { $0 = row }
+        #expect(try ref.decode(as: String.self) == long)
+
+        var bindings = OracleBindings()
+        bindings.append(ref, isReturning: false)
+        var big = ByteBuffer()
+        big.writeOracleCLR(Array(long.utf8), format: .big)
+        var small = ByteBuffer()
+        small.writeOracleCLR(Array(long.utf8), format: .small)
+        #expect(bindings.bytes == big)
+        #expect(bindings.smallChunkRow?.bytes == small)
+    }
+
+    @Test func aValueThatDoesNotChunkIsEncodedOnce() {
+        let counter = CountingValue(payload: [UInt8](repeating: 0xfe, count: 200))
+        var bindings = OracleBindings()
+        bindings.append(counter, context: .default, bindName: "1")
+        #expect(counter.calls.withLockedValue { $0 } == 1)
+        #expect(bindings.smallChunkRow == nil)
+    }
+
+    @Test func aThrowingSecondEncodeLeavesTheBindsAsTheyWere() {
+        var bindings = OracleBindings()
+        bindings.append("kept")
+        let before = bindings.bytes
+        let failing = FailsOnSecondEncode(payload: [UInt8](repeating: 1, count: 300))
+        #expect(throws: FailsOnSecondEncode.Failure.self) {
+            try bindings.append(failing, context: .default, bindName: "2")
+        }
+        #expect(bindings.bytes == before)
+        #expect(bindings.count == 1)
+        #expect(bindings.smallChunkRow == nil)
     }
 
     // Measured: Oracle 11.2 refuses a CLOB defined as LONG with ORA-00932, and its server process dies on an empty
@@ -332,5 +381,51 @@ import Testing
         }
         #expect(payload == Self.bytes(70_000))
         _ = try channel.finish()
+    }
+}
+
+private final class CountingValue: OracleEncodable {
+    let payload: [UInt8]
+    let calls = NIOLockedValueBox(0)
+
+    init(payload: [UInt8]) {
+        self.payload = payload
+    }
+
+    static var defaultOracleType: OracleDataType { .raw }
+
+    func encode(into buffer: inout ByteBuffer, context: OracleEncodingContext) {
+        self.calls.withLockedValue { $0 += 1 }
+        ByteBuffer(bytes: self.payload).encode(into: &buffer, context: context)
+    }
+
+    func _encodeRaw(into buffer: inout ByteBuffer, context: OracleEncodingContext) {
+        self.encode(into: &buffer, context: context)
+    }
+}
+
+private final class FailsOnSecondEncode: OracleThrowingEncodable {
+    struct Failure: Error {}
+
+    let payload: [UInt8]
+    let calls = NIOLockedValueBox(0)
+
+    init(payload: [UInt8]) {
+        self.payload = payload
+    }
+
+    static var defaultOracleType: OracleDataType { .raw }
+
+    func encode(into buffer: inout ByteBuffer, context: OracleEncodingContext) throws {
+        let call = self.calls.withLockedValue { calls in
+            calls += 1
+            return calls
+        }
+        guard call == 1 else { throw Failure() }
+        ByteBuffer(bytes: self.payload).encode(into: &buffer, context: context)
+    }
+
+    func _encodeRaw(into buffer: inout ByteBuffer, context: OracleEncodingContext) throws {
+        try self.encode(into: &buffer, context: context)
     }
 }
