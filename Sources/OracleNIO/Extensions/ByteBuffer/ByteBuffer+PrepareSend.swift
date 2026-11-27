@@ -37,7 +37,9 @@ extension ByteBuffer {
             self.setInteger(UInt32(self.readableBytes), at: position)
             position += MemoryLayout<UInt32>.size
         } else {
-            self.setInteger(UInt16(self.readableBytes), at: position)
+            // A request longer than a two-byte length leaves the encoder whole; OracleFrontendMessagePostProcessor
+            // splits it into SDU-sized packets and writes each one's own length.
+            self.setInteger(UInt16(clamping: self.readableBytes), at: position)
             position += MemoryLayout<UInt16>.size
             self.setInteger(UInt16(0), at: position)
             position += MemoryLayout<UInt16>.size

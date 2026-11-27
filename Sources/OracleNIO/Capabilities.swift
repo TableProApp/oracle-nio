@@ -32,6 +32,7 @@ struct Capabilities: Sendable, Hashable {
     var sdu: UInt32 = UInt32(Constants.TNS_SDU)
     var acceptFlags0: UInt8 = 0
     var acceptFlags1: UInt8 = 0
+    var clrChunkFormat = CLRChunkFormat.big
 
     /// Whether to run the native network encryption (ANO) handshake after accept.
     ///
@@ -132,6 +133,10 @@ struct Capabilities: Sendable, Hashable {
         self.ttcFieldVersion = try buffer.throwingReadInteger()
         self.acceptFlags0 = try buffer.throwingReadInteger()
         self.acceptFlags1 = try buffer.throwingReadInteger()
+        guard let format = CLRChunkFormat(rawValue: try buffer.throwingReadInteger()) else {
+            throw OraclePartialDecodingError.fieldNotDecodable(type: CLRChunkFormat.self)
+        }
+        self.clrChunkFormat = format
     }
 
     /// Encodes all the properties of capabilities except the runtime and compile time capabilities.
@@ -149,6 +154,7 @@ struct Capabilities: Sendable, Hashable {
         buffer.writeInteger(self.ttcFieldVersion)
         buffer.writeInteger(self.acceptFlags0)
         buffer.writeInteger(self.acceptFlags1)
+        buffer.writeInteger(self.clrChunkFormat.rawValue)
     }
 
     mutating func adjustForProtocol(
@@ -183,6 +189,10 @@ struct Capabilities: Sendable, Hashable {
             .getInteger(
                 at: Constants.TNS_CCAP_FIELD_VERSION, as: UInt8.self
             )
+        let ttc3 = serverCapabilities.getInteger(
+            at: serverCapabilities.readerIndex + Constants.TNS_CCAP_TTC3, as: UInt8.self
+        )
+        self.clrChunkFormat = (ttc3 ?? 0) & Constants.TNS_CCAP_BIG_CHUNK_CLR != 0 ? .big : .small
         if let ttcFieldVersion, ttcFieldVersion < self.ttcFieldVersion {
             self.ttcFieldVersion = ttcFieldVersion
             self.compileCapabilities[Constants.TNS_CCAP_FIELD_VERSION] =

@@ -39,7 +39,7 @@ extension OracleBackendMessage {
                 bitVector = try buffer.throwingReadBytes(length: Int(bitVectorLength))
             }
             if try buffer.throwingReadUB4() > 0 {
-                try buffer.throwingSkipRawBytesChunked()  // rxhrid
+                try buffer.throwingSkipRawBytesChunked(chunks: context.capabilities.clrChunkFormat)  // rxhrid
             }
             return .init(bitVector: bitVector)
         }

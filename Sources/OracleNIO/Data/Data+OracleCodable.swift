@@ -29,34 +29,8 @@ extension Data: OracleEncodable {
         into buffer: inout ByteBuffer,
         context: OracleEncodingContext
     ) {
-        var length = self.count
-        var position = 0
-
-        buffer.reserveCapacity(minimumWritableBytes: MemoryLayout<UInt8>.size + length)
-        if length <= Constants.TNS_MAX_SHORT_LENGTH {
-            buffer.writeInteger(UInt8(length))
-
-            var index = buffer.writerIndex
-            for region in self.regions {
-                region.withUnsafeBytes { bufferPointer in
-                    index += buffer.setBytes(bufferPointer, at: index)
-                }
-            }
-            buffer.moveWriterIndex(to: index)
-        } else {
-            buffer.writeInteger(Constants.TNS_LONG_LENGTH_INDICATOR)
-            while length > 0 {
-                let chunkLength = Swift.min(length, Constants.TNS_CHUNK_SIZE)
-                buffer.writeUB4(UInt32(chunkLength))
-                length -= chunkLength
-                let part =
-                    self
-                    .subdata(in: position..<(position + chunkLength))
-                buffer.writeBytes(part)
-                position += chunkLength
-            }
-            buffer.writeUB4(0)
-        }
+        buffer.reserveCapacity(minimumWritableBytes: MemoryLayout<UInt8>.size + self.count)
+        buffer.writeOracleCLR(self, context: context)
     }
 
     @inlinable

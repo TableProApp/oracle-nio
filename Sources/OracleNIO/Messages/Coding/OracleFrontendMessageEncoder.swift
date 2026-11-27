@@ -59,6 +59,10 @@ struct OracleFrontendMessageEncoder {
 
     private var sequenceNumber: UInt8 = 0
 
+    private var encodingContext: OracleEncodingContext {
+        OracleEncodingContext(clrChunkFormat: self.capabilities.clrChunkFormat)
+    }
+
     init(buffer: ByteBuffer, capabilities: Capabilities) {
         self.buffer = buffer
         self.capabilities = capabilities
@@ -624,7 +628,7 @@ struct OracleFrontendMessageEncoder {
             }
         }
         if cursorID == 0 || statementContext.type.isDDL {
-            statementContext.sql._encodeRaw(into: &self.buffer, context: .default)
+            statementContext.sql._encodeRaw(into: &self.buffer, context: self.encodingContext)
             self.buffer.writeUB4(1)  // al8i4[0] parse
         } else {
             self.buffer.writeUB4(0)  // al8i4[0] parse
@@ -703,11 +707,15 @@ struct OracleFrontendMessageEncoder {
             switch parameters {
             case .one(let binds):
                 self.buffer.writeOracleMessageID(.rowData)
-                self.writeBindParameterRow(bytes: binds.bytes, longBytes: binds.longBytes)
+                self.writeBindParameterRow(
+                    bytes: binds.bytes, longBytes: binds.longBytes, smallChunkRow: binds.smallChunkRow
+                )
             case .many(let collection):
                 for binds in collection.bindings {
                     self.buffer.writeOracleMessageID(.rowData)
-                    self.writeBindParameterRow(bytes: binds.0, longBytes: binds.long)
+                    self.writeBindParameterRow(
+                        bytes: binds.bytes, longBytes: binds.longBytes, smallChunkRow: binds.smallChunkRow
+                    )
                 }
             case .none:
                 preconditionFailure("How can no binds have metadata?")
@@ -785,7 +793,7 @@ struct OracleFrontendMessageEncoder {
         }
         if let data = context.withLock({ $0.data }) {
             self.buffer.writeOracleMessageID(.lobData)
-            data._encodeRaw(into: &self.buffer, context: .default)
+            data._encodeRaw(into: &self.buffer, context: self.encodingContext)
         }
         if context.sendAmount {
             self.buffer.writeUB8(context.amount)  // LOB amount
@@ -1079,10 +1087,10 @@ extension OracleFrontendMessageEncoder {
         let valueBytes = ByteBuffer(string: value)
         let valueLength = valueBytes.readableBytes
         self.buffer.writeUB4(UInt32(keyLength))
-        keyBytes._encodeRaw(into: &self.buffer, context: .default)
+        keyBytes._encodeRaw(into: &self.buffer, context: self.encodingContext)
         self.buffer.writeUB4(UInt32(valueLength))
         if valueLength > 0 {
-            valueBytes._encodeRaw(into: &buffer, context: .default)
+            valueBytes._encodeRaw(into: &buffer, context: self.encodingContext)
         }
         self.buffer.writeUB4(flags)
     }
@@ -1120,7 +1128,7 @@ extension OracleFrontendMessageEncoder {
         self.buffer.writeInteger(UInt8(1))  // pointer (authovl)
         self.buffer.writeInteger(UInt8(1))  // pointer (authovln)
         if hasUser != 0 {
-            username._encodeRaw(into: &self.buffer, context: .default)
+            username._encodeRaw(into: &self.buffer, context: self.encodingContext)
         }
     }
 
@@ -1210,11 +1218,15 @@ extension OracleFrontendMessageEncoder {
             switch binds {
             case .one(let binds):
                 self.buffer.writeOracleMessageID(.rowData)
-                self.writeBindParameterRow(bytes: binds.bytes, longBytes: binds.longBytes)
+                self.writeBindParameterRow(
+                    bytes: binds.bytes, longBytes: binds.longBytes, smallChunkRow: binds.smallChunkRow
+                )
             case .many(let collection):
                 for binds in collection.bindings {
                     self.buffer.writeOracleMessageID(.rowData)
-                    self.writeBindParameterRow(bytes: binds.0, longBytes: binds.long)
+                    self.writeBindParameterRow(
+                        bytes: binds.bytes, longBytes: binds.longBytes, smallChunkRow: binds.smallChunkRow
+                    )
                 }
             case .none:
                 preconditionFailure("How can no binds have data?")
@@ -1228,9 +1240,17 @@ extension OracleFrontendMessageEncoder {
         for info in metadata {
             var oracleType = info.dataType._oracleType
             var bufferSize = info.bufferSize
+            var longLength = Constants.TNS_MAX_LONG_LENGTH
             if [.rowID, .uRowID].contains(oracleType) {
                 oracleType = .varchar
                 bufferSize = Constants.TNS_MAX_UROWID_LENGTH
+            }
+            // A CLOB read as text. Measured: Oracle 11.2 refuses one defined as LONG (ORA-00932) and its server
+            // process dies on an empty one defined at the full LONG length; LONG VARCHAR at this length reads the
+            // same as LONG on 23ai, and is what go-ora sends.
+            if let described = info.describedDataType, [.clob, .nCLOB].contains(described) {
+                oracleType = .lvc
+                longLength = Constants.TNS_LOB_AS_LONG_LENGTH
             }
             var flag: UInt8 = Constants.TNS_BIND_USE_INDICATORS
             if info.isArray {
@@ -1256,7 +1276,7 @@ extension OracleFrontendMessageEncoder {
             self.buffer.writeInteger(UInt8(0))
             self.buffer.writeInteger(UInt8(0))
             if bufferSize > self.capabilities.maxStringSize {
-                self.buffer.writeUB4(Constants.TNS_MAX_LONG_LENGTH)
+                self.buffer.writeUB4(longLength)
             } else {
                 self.buffer.writeUB4(bufferSize)
             }
@@ -1283,7 +1303,14 @@ extension OracleFrontendMessageEncoder {
         }
     }
 
-    private mutating func writeBindParameterRow(bytes: ByteBuffer, longBytes: ByteBuffer) {
+    private mutating func writeBindParameterRow(
+        bytes: ByteBuffer, longBytes: ByteBuffer, smallChunkRow: OracleBindings.SmallChunkRow?
+    ) {
+        if self.capabilities.clrChunkFormat == .small, let smallChunkRow {
+            self.buffer.writeImmutableBuffer(smallChunkRow.bytes)
+            self.buffer.writeImmutableBuffer(smallChunkRow.longBytes)
+            return
+        }
         self.buffer.writeImmutableBuffer(bytes)
         if longBytes.readableBytes > 0 {
             self.buffer.writeImmutableBuffer(longBytes)
@@ -1313,12 +1340,15 @@ extension OracleFrontendMessageEncoder {
 
 private protocol ColumnMetadata {
     var dataType: OracleDataType { get }
+    var describedDataType: OracleDataType? { get }
     var bufferSize: UInt32 { get }
     var isArray: Bool { get }
     var maxArraySize: Int { get }
 }
 
-extension OracleBindings.Metadata: ColumnMetadata {}
+extension OracleBindings.Metadata: ColumnMetadata {
+    var describedDataType: OracleDataType? { nil }
+}
 
 extension DescribeInfo.Column: ColumnMetadata {
     var isArray: Bool { false }

@@ -481,6 +481,7 @@ enum Constants {
     @usableFromInline
     static let TNS_MIN_LONG_LENGTH = 0x8000
     static let TNS_MAX_LONG_LENGTH: UInt32 = 0x7fff_ffff
+    static let TNS_LOB_AS_LONG_LENGTH: UInt32 = 0x3fff_ffff
     static let TNS_SDU: UInt16 = 8192
     static let TNS_TDU: UInt16 = 65535
     static let TNS_MAX_CURSORS_TO_CLOSE = 500
@@ -488,6 +489,8 @@ enum Constants {
     static let TNS_MAX_CONNECT_DATA = 230
     @usableFromInline
     static let TNS_CHUNK_SIZE = 32767
+    @usableFromInline
+    static let TNS_SMALL_CHUNK_SIZE = 64
     static let TNS_MAX_UROWID_LENGTH: UInt32 = 5267
     static let TNS_SERVER_CONVERTS_CHARS: UInt8 = 0x01
     @usableFromInline

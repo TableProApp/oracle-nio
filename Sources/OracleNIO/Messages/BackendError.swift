@@ -38,6 +38,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
         from buffer: inout ByteBuffer,
         context: OracleBackendMessageDecoder.Context
     ) throws -> BackendError {
+        let chunks = context.capabilities.clrChunkFormat
         let number = try buffer.throwingReadUB2()
         // error number
         let length = try buffer.throwingReadUB2()
@@ -45,7 +46,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
         try buffer.throwingSkipUB2()
         let errorMessage: String? =
             if number != 0 && length > 0 {
-                try buffer.readString().replacing(/(^\s+|\s+$)/, with: "")
+                try buffer.readString(chunks: chunks).replacing(/(^\s+|\s+$)/, with: "")
             } else {
                 nil
             }
@@ -62,6 +63,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
         from buffer: inout ByteBuffer,
         context: OracleBackendMessageDecoder.Context
     ) throws -> BackendError {
+        let chunks = context.capabilities.clrChunkFormat
         try buffer.throwingSkipUB4()  // end of call status
         try buffer.throwingSkipUB2()  // end to end seq#
         try buffer.throwingSkipUB4()  // current row number
@@ -84,7 +86,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
         try buffer.throwingSkipUB4()  // success iters
         let byteCount = try buffer.throwingReadUB4()
         if byteCount > 0 {
-            try buffer.throwingSkipRawBytesChunked()  // oerrdd (logical rowid)
+            try buffer.throwingSkipRawBytesChunked(chunks: chunks)  // oerrdd (logical rowid)
         }
 
         var batch = [OracleError]()
@@ -97,7 +99,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
             for _ in 0..<3 {
                 let chunkLength = try buffer.throwingReadUB4()
                 if chunkLength > 0 {
-                    try buffer.throwingSkipRawBytesChunked()
+                    try buffer.throwingSkipRawBytesChunked(chunks: chunks)
                 }
             }
             number = earlyErrorNumber
@@ -109,7 +111,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
                 let firstByte = try buffer.throwingReadInteger(as: UInt8.self)
                 for _ in 0..<numberOfCodes {
                     if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
-                        try buffer.throwingSkipUB4()  // chunk length ignored
+                        try buffer.throwingSkipCLRChunkLength(chunks)
                     }
                     let errorCode = try buffer.throwingReadUB2()
                     batch.append(.init(code: Int(errorCode)))
@@ -125,7 +127,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
                 let firstByte = try buffer.throwingReadInteger(as: UInt8.self)
                 for i in 0..<numberOfOffsets {
                     if firstByte == Constants.TNS_LONG_LENGTH_INDICATOR {
-                        try buffer.throwingSkipUB4()  // chunked length ignored
+                        try buffer.throwingSkipCLRChunkLength(chunks)
                     }
                     let offset = try buffer.throwingReadUB4()
                     if Int(i) < batch.count {
@@ -145,7 +147,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
                     try buffer.throwingSkipUB2()  // skip chunk length
                     let errorMessage =
                         try buffer
-                        .readString()
+                        .readString(chunks: chunks)
                         .replacing(/(^\s+|\s+$)/, with: "")
                     if Int(i) < batch.count {
                         batch[Int(i)].message = errorMessage
@@ -166,7 +168,7 @@ struct BackendError: OracleBackendMessage.PayloadDecodable, Hashable, Sendable {
 
         let errorMessage: String? =
             if number != 0 {
-                try buffer.readString().replacing(/(^\s+|\s+$)/, with: "")
+                try buffer.readString(chunks: chunks).replacing(/(^\s+|\s+$)/, with: "")
             } else {
                 nil
             }

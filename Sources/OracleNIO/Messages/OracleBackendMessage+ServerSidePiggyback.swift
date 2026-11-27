@@ -42,25 +42,26 @@ extension OracleBackendMessage {
             from buffer: inout ByteBuffer,
             context: OracleBackendMessageDecoder.Context
         ) throws -> OracleBackendMessage.ServerSidePiggyback {
+            let chunks = context.capabilities.clrChunkFormat
             let rawOpCode = try buffer.throwingReadInteger(as: UInt8.self)
             guard let opCode = Code(rawValue: rawOpCode) else {
                 throw OraclePartialDecodingError.unknownServerSidePiggyback(opCode: rawOpCode)
             }
             switch opCode {
             case .ltxID:
-                try buffer.throwingSkipBytesWithLength()
+                try buffer.throwingSkipBytesWithLength(chunks: chunks)
             case .queryCacheInvalidation, .traceEvent:
                 break
             case .osPidMts:
                 try buffer.throwingSkipUB2()
-                try buffer.throwingSkipBytes()
+                try buffer.throwingSkipBytes(chunks: chunks)
             case .sync:
                 try buffer.throwingSkipUB2()  // number of DTYs
                 try buffer.throwingSkipUB1()  // length of DTYs
                 let numberOfElements = try buffer.throwingReadUB2()
                 try buffer.throwingSkipUB1()  // length
                 for _ in 0..<numberOfElements {
-                    try buffer.throwingSkipKeywordValuePair()
+                    try buffer.throwingSkipKeywordValuePair(chunks: chunks)
                 }
                 try buffer.throwingSkipUB4()  // overall flags
             case .extSync:
@@ -72,7 +73,7 @@ extension OracleBackendMessage {
                 try buffer.throwingSkipUB4()  // flags
                 try buffer.throwingSkipUB4()  // error code
                 try buffer.throwingSkipUB1()  // queue
-                try buffer.throwingSkipBytesWithLength()  // replay context
+                try buffer.throwingSkipBytesWithLength(chunks: chunks)  // replay context
             case .sessRet:
                 try buffer.throwingSkipUB2()  // number of DTYs
                 try buffer.throwingSkipUB1()  // length of DTYs
@@ -80,7 +81,7 @@ extension OracleBackendMessage {
                 if numberOfElements > 0 {
                     try buffer.throwingSkipUB1()  // length
                     for _ in 0..<numberOfElements {
-                        try buffer.throwingSkipKeywordValuePair()
+                        try buffer.throwingSkipKeywordValuePair(chunks: chunks)
                     }
                 }
                 let flags = try buffer.throwingReadUB4()  // session flags
@@ -104,25 +105,25 @@ extension OracleBackendMessage {
 extension ByteBuffer {
     /// Skips one keyword/value pair of a piggyback: a text value, a binary value and a trailing number, each
     /// announced by a UB2 length, and each value length-prefixed.
-    fileprivate mutating func throwingSkipKeywordValuePair() throws {
+    fileprivate mutating func throwingSkipKeywordValuePair(chunks: CLRChunkFormat) throws {
         if try self.throwingReadUB2() > 0 {
-            try self.throwingSkipBytes()
+            try self.throwingSkipBytes(chunks: chunks)
         }
         if try self.throwingReadUB2() > 0 {
-            try self.throwingSkipBytes()
+            try self.throwingSkipBytes(chunks: chunks)
         }
         try self.throwingSkipUB2()
     }
 
     /// Skips a length-prefixed byte string, chunked or not.
-    fileprivate mutating func throwingSkipBytes() throws {
-        _ = try self.throwingReadOracleSpecificLengthPrefixedSlice()
+    fileprivate mutating func throwingSkipBytes(chunks: CLRChunkFormat) throws {
+        _ = try self.throwingReadOracleSpecificLengthPrefixedSlice(chunks: chunks)
     }
 
     /// Skips a byte string preceded by a UB4 length, which is zero when the string is absent.
-    fileprivate mutating func throwingSkipBytesWithLength() throws {
+    fileprivate mutating func throwingSkipBytesWithLength(chunks: CLRChunkFormat) throws {
         if try self.throwingReadUB4() > 0 {
-            try self.throwingSkipBytes()
+            try self.throwingSkipBytes(chunks: chunks)
         }
     }
 }

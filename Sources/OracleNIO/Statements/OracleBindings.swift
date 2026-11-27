@@ -18,17 +18,23 @@ import NIOCore
 struct OracleBindingsCollection {
     /// Metadata is shared by all bind rows.
     var metadata: [OracleBindings.Metadata] = []
-    var bindings: [(ByteBuffer, long: ByteBuffer)] = []
+    var bindings: [Row] = []
     var hasData = false
+
+    struct Row {
+        var bytes = ByteBuffer()
+        var longBytes = ByteBuffer()
+        var smallChunkRow: OracleBindings.SmallChunkRow?
+    }
 
     mutating func appendRow<each Bind: OracleThrowingDynamicTypeEncodable>(
         _ row: repeat (each Bind)?,
         context: OracleEncodingContext
     ) throws {
         var index = 0
-        var bindings: (ByteBuffer, long: ByteBuffer) = (ByteBuffer(), ByteBuffer())
+        var bindings = Row()
         repeat try appendBind(each row, context: context, into: &bindings, index: &index)
-        if !hasData { hasData = bindings.0.readableBytes > 0 || bindings.long.readableBytes > 0 }
+        if !hasData { hasData = bindings.bytes.readableBytes > 0 || bindings.longBytes.readableBytes > 0 }
         self.bindings.append(bindings)
     }
 
@@ -44,13 +50,13 @@ struct OracleBindingsCollection {
             }
         }
         if !hasData { hasData = row.bytes.readableBytes > 0 || row.longBytes.readableBytes > 0 }
-        self.bindings.append((row.bytes, row.longBytes))
+        self.bindings.append(Row(bytes: row.bytes, longBytes: row.longBytes, smallChunkRow: row.smallChunkRow))
     }
 
     private mutating func appendBind<T: OracleThrowingDynamicTypeEncodable>(
         _ bind: T?,
         context: OracleEncodingContext,
-        into buffers: inout (ByteBuffer, long: ByteBuffer),
+        into buffers: inout Row,
         index: inout Int
     ) throws {
         let newMetadata =
@@ -71,22 +77,18 @@ struct OracleBindingsCollection {
                     bindName: "\(index)"
                 )
             }
-        if let bind, newMetadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH {
-            try bind._encodeRaw(into: &buffers.long, context: context)
-        } else if let bind {
-            try bind._encodeRaw(into: &buffers.0, context: context)
-        } else if T.defaultOracleType == .boolean {
-            buffers.0.writeInteger(Constants.TNS_ESCAPE_CHAR)
-            buffers.0.writeInteger(UInt8(1))
-        } else if T.defaultOracleType._oracleType == .intNamed {
-            buffers.0.writeUB4(0)  // TOID
-            buffers.0.writeUB4(0)  // OID
-            buffers.0.writeUB4(0)  // snapshot
-            buffers.0.writeUB4(0)  // version
-            buffers.0.writeUB4(0)  // packed data length
-            buffers.0.writeUB4(Constants.TNS_OBJ_TOP_LEVEL)  // flags
+        if let bind {
+            try OracleBindings.appendEncoded(
+                to: &buffers.bytes, &buffers.longBytes, &buffers.smallChunkRow,
+                long: newMetadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH, context: context
+            ) { try bind._encodeRaw(into: &$0, context: $1) }
         } else {
-            buffers.0.writeInteger(UInt8(0))
+            let start = buffers.bytes.writerIndex
+            OracleBindings.writeNull(T.defaultOracleType, into: &buffers.bytes)
+            OracleBindings.mirror(
+                into: &buffers.smallChunkRow, bytes: buffers.bytes, longBytes: buffers.longBytes,
+                long: false, start: start, small: nil
+            )
         }
         if metadata.count <= index {
             metadata.append(newMetadata)
@@ -180,6 +182,9 @@ public struct OracleBindings: Sendable, Hashable {
     /// In the end ``bytes`` + ``longBytes`` will be written to the wire.
     @usableFromInline
     var longBytes: ByteBuffer
+    // The same binds for a server that reads one-byte chunk lengths, kept once a value is framed differently there.
+    @usableFromInline
+    var smallChunkRow: SmallChunkRow?
 
     public var count: Int {
         self.metadata.count
@@ -203,19 +208,12 @@ public struct OracleBindings: Sendable, Hashable {
         _ dataType: OracleDataType?, bindName: String
     ) {
         let dataType = dataType ?? .varchar
-        if dataType == .boolean {
-            self.bytes.writeInteger(Constants.TNS_ESCAPE_CHAR)
-            self.bytes.writeInteger(UInt8(1))
-        } else if dataType._oracleType == .intNamed {
-            self.bytes.writeUB4(0)  // TOID
-            self.bytes.writeUB4(0)  // OID
-            self.bytes.writeUB4(0)  // snapshot
-            self.bytes.writeUB4(0)  // version
-            self.bytes.writeUB4(0)  // packed data length
-            self.bytes.writeUB4(Constants.TNS_OBJ_TOP_LEVEL)  // flags
-        } else {
-            self.bytes.writeInteger(UInt8(0))
-        }
+        let start = self.bytes.writerIndex
+        Self.writeNull(dataType, into: &self.bytes)
+        Self.mirror(
+            into: &self.smallChunkRow, bytes: self.bytes, longBytes: self.longBytes,
+            long: false, start: start, small: nil
+        )
         self.metadata.append(
             .init(
                 dataType: dataType,
@@ -241,11 +239,10 @@ public struct OracleBindings: Sendable, Hashable {
             protected: true,
             bindName: bindName
         )
-        if metadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH {
-            try value._encodeRaw(into: &self.longBytes, context: context)
-        } else {
-            try value._encodeRaw(into: &self.bytes, context: context)
-        }
+        try Self.appendEncoded(
+            to: &self.bytes, &self.longBytes, &self.smallChunkRow,
+            long: metadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH, context: context
+        ) { try value._encodeRaw(into: &$0, context: $1) }
         self.metadata.append(metadata)
     }
 
@@ -265,11 +262,10 @@ public struct OracleBindings: Sendable, Hashable {
             protected: true,
             bindName: bindName
         )
-        if metadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH {
-            value._encodeRaw(into: &self.longBytes, context: context)
-        } else {
-            value._encodeRaw(into: &self.bytes, context: context)
-        }
+        Self.appendEncoded(
+            to: &self.bytes, &self.longBytes, &self.smallChunkRow,
+            long: metadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH, context: context
+        ) { value._encodeRaw(into: &$0, context: $1) }
         self.metadata.append(metadata)
     }
 
@@ -288,15 +284,25 @@ public struct OracleBindings: Sendable, Hashable {
             metadata.bindName = bindName
             metadata.outContainer = value
             value.storage.withLockedValue { valueStorage in
-                if var bytes = valueStorage {
-                    if metadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH {
-                        self.longBytes.writeBuffer(&bytes)
+                let long = valueStorage != nil && metadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH
+                let start = long ? self.longBytes.writerIndex : self.bytes.writerIndex
+                var small: ByteBuffer?
+                if let valueStorage {
+                    let bytes = OracleRef.wireFraming(of: valueStorage, type: metadata.dataType, format: .big)
+                    if long {
+                        self.longBytes.writeImmutableBuffer(bytes)
                     } else {
-                        self.bytes.writeBuffer(&bytes)
+                        self.bytes.writeImmutableBuffer(bytes)
                     }
+                    let smallBytes = OracleRef.wireFraming(of: valueStorage, type: metadata.dataType, format: .small)
+                    small = smallBytes == bytes ? nil : smallBytes
                 } else if !isReturning {  // return binds do not send null
                     self.bytes.writeInteger(UInt8(0))  // null
                 }
+                Self.mirror(
+                    into: &self.smallChunkRow, bytes: self.bytes, longBytes: self.longBytes,
+                    long: long, start: start, small: small
+                )
             }
             self.metadata.append(metadata)
         }
@@ -322,11 +328,10 @@ public struct OracleBindings: Sendable, Hashable {
             protected: false,
             bindName: bindName
         )
-        if metadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH {
-            try value._encodeRaw(into: &self.longBytes, context: context)
-        } else {
-            try value._encodeRaw(into: &self.bytes, context: context)
-        }
+        try Self.appendEncoded(
+            to: &self.bytes, &self.longBytes, &self.smallChunkRow,
+            long: metadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH, context: context
+        ) { try value._encodeRaw(into: &$0, context: $1) }
         self.metadata.append(metadata)
     }
 
@@ -341,11 +346,10 @@ public struct OracleBindings: Sendable, Hashable {
             protected: false,
             bindName: bindName
         )
-        if metadata.bufferSize >= Constants.TNS_LONG_LENGTH_INDICATOR {
-            value._encodeRaw(into: &self.longBytes, context: context)
-        } else {
-            value._encodeRaw(into: &self.bytes, context: context)
-        }
+        Self.appendEncoded(
+            to: &self.bytes, &self.longBytes, &self.smallChunkRow,
+            long: metadata.bufferSize >= Constants.TNS_MIN_LONG_LENGTH, context: context
+        ) { value._encodeRaw(into: &$0, context: $1) }
         self.metadata.append(metadata)
     }
 
@@ -359,6 +363,107 @@ public struct OracleBindings: Sendable, Hashable {
     @usableFromInline
     func contains(ref: OracleRef) -> String? {
         self.metadata.first(where: { $0.outContainer === ref })?.bindName
+    }
+}
+
+extension OracleBindings {
+    @usableFromInline
+    struct SmallChunkRow: Sendable, Hashable {
+        @usableFromInline
+        var bytes: ByteBuffer
+        @usableFromInline
+        var longBytes: ByteBuffer
+
+        @inlinable
+        init(bytes: ByteBuffer, longBytes: ByteBuffer) {
+            self.bytes = bytes
+            self.longBytes = longBytes
+        }
+    }
+
+    // The encoder runs once, and a second time in the small format only for a value that chunked. A throw leaves
+    // the binds as they were.
+    @inlinable
+    static func appendEncoded(
+        to bytes: inout ByteBuffer,
+        _ longBytes: inout ByteBuffer,
+        _ smallChunkRow: inout SmallChunkRow?,
+        long: Bool,
+        context: OracleEncodingContext,
+        _ encode: (inout ByteBuffer, OracleEncodingContext) throws -> Void
+    ) rethrows {
+        let bytesEnd = bytes.writerIndex
+        let longBytesEnd = longBytes.writerIndex
+        let start = long ? longBytesEnd : bytesEnd
+        var recording = context
+        recording.chunkWitness = NIOLockedValueBox(false)
+        do {
+            if long {
+                try encode(&longBytes, recording)
+            } else {
+                try encode(&bytes, recording)
+            }
+            var small: ByteBuffer?
+            if recording.chunkWitness?.withLockedValue({ $0 }) == true {
+                var smallContext = context
+                smallContext.clrChunkFormat = .small
+                var buffer = ByteBuffer()
+                try encode(&buffer, smallContext)
+                small = buffer
+            }
+            Self.mirror(
+                into: &smallChunkRow, bytes: bytes, longBytes: longBytes, long: long, start: start, small: small
+            )
+        } catch {
+            bytes.moveWriterIndex(to: bytesEnd)
+            longBytes.moveWriterIndex(to: longBytesEnd)
+            throw error
+        }
+    }
+
+    // Copies the value written at `start` into the small row, or its `small` framing, and starts the row from what
+    // came before once a value differs.
+    @inlinable
+    static func mirror(
+        into smallChunkRow: inout SmallChunkRow?,
+        bytes: ByteBuffer,
+        longBytes: ByteBuffer,
+        long: Bool,
+        start: Int,
+        small: ByteBuffer?
+    ) {
+        let written = long ? longBytes : bytes
+        if smallChunkRow == nil {
+            guard small != nil else { return }
+            smallChunkRow = SmallChunkRow(
+                bytes: long ? bytes : bytes.getSlice(at: bytes.readerIndex, length: start - bytes.readerIndex)!,
+                longBytes: long
+                    ? longBytes.getSlice(at: longBytes.readerIndex, length: start - longBytes.readerIndex)!
+                    : longBytes
+            )
+        }
+        var value = small ?? written.getSlice(at: start, length: written.writerIndex - start)!
+        if long {
+            smallChunkRow!.longBytes.writeBuffer(&value)
+        } else {
+            smallChunkRow!.bytes.writeBuffer(&value)
+        }
+    }
+
+    static func writeNull(_ dataType: OracleDataType, into bytes: inout ByteBuffer) {
+        if dataType == .boolean {
+            bytes.writeInteger(Constants.TNS_ESCAPE_CHAR)
+            bytes.writeInteger(UInt8(1))
+        } else if dataType._oracleType == .intNamed {
+            bytes.writeUB4(0)  // TOID
+            bytes.writeUB4(0)  // OID
+            bytes.writeUB4(0)  // snapshot
+            bytes.writeUB4(0)  // version
+            bytes.writeUB4(0)  // packed data length
+            bytes.writeUB4(Constants.TNS_OBJ_TOP_LEVEL)  // flags
+        } else {
+            bytes.writeInteger(UInt8(0))
+        }
     }
 }
 
@@ -457,7 +562,7 @@ private struct BindingsReader: Sequence {
         }
 
         mutating func next() -> ByteBuffer?? {
-            return self.buffer.readOracleSpecificLengthPrefixedSlice()
+            return self.buffer.readOracleSpecificLengthPrefixedSlice(chunks: .big)
         }
     }
 

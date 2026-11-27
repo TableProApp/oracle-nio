@@ -90,6 +90,7 @@ struct DescribeInfo: OracleBackendMessage.PayloadDecodable, Sendable, Hashable {
             from buffer: inout ByteBuffer,
             context: OracleBackendMessageDecoder.Context
         ) throws -> Column {
+            let chunks = context.capabilities.clrChunkFormat
             let dataType = try buffer.throwingReadInteger(as: UInt8.self)
             try buffer.throwingMoveReaderIndex(forwardBy: 1)  // flags
             let precision = try buffer.throwingReadInteger(as: Int8.self)
@@ -101,7 +102,7 @@ struct DescribeInfo: OracleBackendMessage.PayloadDecodable, Sendable, Hashable {
             let oidByteCount = try buffer.throwingReadUB4()  // OID
             if oidByteCount > 0 {
                 // oid, only relevant for intNamed
-                _ = try buffer.throwingReadOracleSpecificLengthPrefixedSlice()
+                _ = try buffer.throwingReadOracleSpecificLengthPrefixedSlice(chunks: chunks)
             }
 
             try buffer.throwingSkipUB2()  // version
@@ -135,15 +136,15 @@ struct DescribeInfo: OracleBackendMessage.PayloadDecodable, Sendable, Hashable {
             guard try buffer.throwingReadUB4() > 0 else {
                 throw OraclePartialDecodingError.fieldNotDecodable(type: String.self)
             }
-            let name = try buffer.readString()
+            let name = try buffer.readString(chunks: chunks)
 
             let typeSchema: String? =
                 if try buffer.throwingReadUB4() > 0 {
-                    try buffer.readString()  // current schema name, for intNamed
+                    try buffer.readString(chunks: chunks)  // current schema name, for intNamed
                 } else { nil }
             let typeName: String? =
                 if try buffer.throwingReadUB4() > 0 {
-                    try buffer.readString()  // name of intNamed
+                    try buffer.readString(chunks: chunks)  // name of intNamed
                 } else { nil }
 
             try buffer.throwingSkipUB2()  // column position
@@ -153,10 +154,10 @@ struct DescribeInfo: OracleBackendMessage.PayloadDecodable, Sendable, Hashable {
             var domainName: String?
             if context.capabilities.ttcFieldVersion >= Constants.TNS_CCAP_FIELD_VERSION_23_1 {
                 if try buffer.throwingReadUB4() > 0 {
-                    domainSchema = try buffer.readString()
+                    domainSchema = try buffer.readString(chunks: chunks)
                 }
                 if try buffer.throwingReadUB4() > 0 {
-                    domainName = try buffer.readString()
+                    domainName = try buffer.readString(chunks: chunks)
                 }
             }
 
@@ -169,9 +170,9 @@ struct DescribeInfo: OracleBackendMessage.PayloadDecodable, Sendable, Hashable {
                     try buffer.throwingMoveReaderIndex(forwardBy: 1)
                     for _ in 0..<actualCount {
                         try buffer.throwingSkipUB4()  // length of key
-                        let key = try buffer.readString()
+                        let key = try buffer.readString(chunks: chunks)
                         let valueLength = try buffer.throwingReadUB4()
-                        let value = if valueLength > 0 { try buffer.readString() } else { "" }
+                        let value = if valueLength > 0 { try buffer.readString(chunks: chunks) } else { "" }
                         annotations[key] = value
                         try buffer.throwingSkipUB4()  // flags
                     }
@@ -207,7 +208,7 @@ struct DescribeInfo: OracleBackendMessage.PayloadDecodable, Sendable, Hashable {
         from buffer: inout ByteBuffer,
         context: OracleBackendMessageDecoder.Context
     ) throws -> DescribeInfo {
-        try buffer.throwingSkipRawBytesChunked()
+        try buffer.throwingSkipRawBytesChunked(chunks: context.capabilities.clrChunkFormat)
         return try self._decode(from: &buffer, context: context)
     }
 
@@ -232,14 +233,14 @@ struct DescribeInfo: OracleBackendMessage.PayloadDecodable, Sendable, Hashable {
         }
 
         if try buffer.throwingReadUB4() > 0 {
-            try buffer.throwingSkipRawBytesChunked()  // current date
+            try buffer.throwingSkipRawBytesChunked(chunks: context.capabilities.clrChunkFormat)  // current date
         }
         try buffer.throwingSkipUB4()  // dcbflag
         try buffer.throwingSkipUB4()  // dcbmdbz
         try buffer.throwingSkipUB4()  // dcbmnpr
         try buffer.throwingSkipUB4()  // dcbmxpr
         if try buffer.throwingReadUB4() > 0 {
-            try buffer.throwingSkipRawBytesChunked()  // dcbqcky
+            try buffer.throwingSkipRawBytesChunked(chunks: context.capabilities.clrChunkFormat)  // dcbqcky
         }
 
         return DescribeInfo(columns: result)
