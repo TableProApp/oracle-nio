@@ -293,6 +293,13 @@ import Testing
         #expect(bindings.smallChunkRow?.bytes == small)
     }
 
+    @Test func refWithAShortValueKeepsNoSmallRow() {
+        var bindings = OracleBindings()
+        bindings.append(OracleRef("short"), isReturning: false)
+        bindings.append(OracleRef(OracleNumber(7)), isReturning: false)
+        #expect(bindings.smallChunkRow == nil)
+    }
+
     // A returned value arrives as a row frames it; bound again, it goes in the wire's framing.
     @Test func refThatReceivedALongValueBindsItAgainInEitherFormat() throws {
         let long = String(repeating: "o", count: 300)

@@ -288,11 +288,11 @@ public struct OracleBindings: Sendable, Hashable {
                 let start = long ? self.longBytes.writerIndex : self.bytes.writerIndex
                 var small: ByteBuffer?
                 if let valueStorage {
-                    var bytes = OracleRef.wireFraming(of: valueStorage, type: metadata.dataType, format: .big)
+                    let bytes = OracleRef.wireFraming(of: valueStorage, type: metadata.dataType, format: .big)
                     if long {
-                        self.longBytes.writeBuffer(&bytes)
+                        self.longBytes.writeImmutableBuffer(bytes)
                     } else {
-                        self.bytes.writeBuffer(&bytes)
+                        self.bytes.writeImmutableBuffer(bytes)
                     }
                     let smallBytes = OracleRef.wireFraming(of: valueStorage, type: metadata.dataType, format: .small)
                     small = smallBytes == bytes ? nil : smallBytes
